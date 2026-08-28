@@ -19,7 +19,10 @@ enum class ErrorCode {
   InternalError,
   NotImplemented,
   UnknownError,
-  ResourceNotFound
+  ResourceNotFound,
+  // Tunnel 下载会话表明该 instance 无可下载的表格结果(如 DDL/SET 等非表格
+  // 语句)。区别于网络/超时/服务端异常, 仅此情形可安全降级为单列 raw result。
+  ResultNotDownloadable
 };
 
 // 错误信息结构

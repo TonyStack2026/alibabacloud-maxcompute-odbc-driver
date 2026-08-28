@@ -59,6 +59,10 @@ class MaxComputeClient {
   // When interactiveMode is true, this will call the getConnection API
   Result<std::string> getConnection();
 
+  // 返回连接建立时从服务端探测更新后的配置(如 namespaceSchema/timezone/
+  // regionId)。ODBC 层(SQLGetInfo/SQLTables 等)据此读取真实的 schema 模型。
+  const Config &getConfig() const;
+
  private:
   Config config_;
   std::unique_ptr<internal::MaxComputeClientImpl> impl_;

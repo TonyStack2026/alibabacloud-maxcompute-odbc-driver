@@ -70,7 +70,14 @@ class ConnHandle : public OdbcHandle {
 
   Config &getConfigForUpdate() { return m_config; }
 
-  void setSDK(std::unique_ptr<MaxComputeClient> sdk) { m_sdk = std::move(sdk); }
+  void setSDK(std::unique_ptr<MaxComputeClient> sdk) {
+    m_sdk = std::move(sdk);
+    // SDK 构造时已从服务端探测真实配置(如 namespaceSchema), 回写到本
+    // 连接的 m_config, 使 SQLGetInfo/SQLTables/SQLColumns 等读到真实 schema 模型。
+    if (m_sdk) {
+      m_config = m_sdk->getConfig();
+    }
+  }
 
   MaxComputeClient *getSDK() const { return m_sdk.get(); }
 

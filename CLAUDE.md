@@ -206,9 +206,9 @@ The `HandleRegistry` is a thread-safe singleton that maps opaque `SQLHANDLE` tok
 
 1. `SQLExecDirect` -> `StmtHandle::executeDirect(sql)`
 2. `SettingParser::parse(sql)` extracts `SET key=value;` prefixes
-3. Schema discovery: submits `EXPLAIN OUTPUT <sql>`, waits, parses JSON result into `ResultSetSchema`
-4. Query submission: POST `/projects/{project}/instances` with XML body
-5. Returns `ResultStreamImpl` (lazy -- does NOT wait for completion)
+3. Query submission: POST `/projects/{project}/instances` with XML body (no EXPLAIN pre-probe)
+4. Returns `ResultStreamImpl` (lazy -- does NOT wait for completion)
+5. Schema discovery is lazy: on first metadata/fetch call, waits for completion, opens `DownloadSession`, and takes `ResultSetSchema` from `DownloadSession::GetSchema()`. Only when the tunnel reports no downloadable tabular result (`ErrorCode::ResultNotDownloadable` -- non-retryable HTTP 4xx or a session missing its `Schema`, e.g. DDL/SET) does it fall back to a single-column `Result`/STRING raw-result stream. Transport failures, timeouts, and 5xx are surfaced as errors (not masked as raw text).
 6. On first `SQLFetch` -> `ResultStreamImpl::fetchNextRow()`:
    - Creates `DownloadSession` (initiates tunnel session)
    - Opens `ConcurrentBufferedRecordReader` (multi-threaded prefetch)

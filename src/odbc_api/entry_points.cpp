@@ -639,9 +639,11 @@ SQLRETURN GetInfoImpl(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
         break;
       }
       case SQL_MAX_SCHEMA_NAME_LEN: {
-        // 最大模式(schema)名称长度
+        // 最大模式(schema)名称长度。两层模型(namespaceSchema=false)无 schema 层,
+        // 返回 0 告知应用不使用 schema 限定, 避免生成 default.table 导致 Table not found。
         if (InfoValuePtr) {
-          *(SQLUSMALLINT *)InfoValuePtr = 128;
+          *(SQLUSMALLINT *)InfoValuePtr =
+              pConn->getConfigForUpdate().namespaceSchema ? 128 : 0;
         }
         info_length = sizeof(SQLUSMALLINT);
         break;
@@ -851,8 +853,11 @@ SQLRETURN GetInfoImpl(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
         break;
       }
       case SQL_SCHEMA_TERM: {
-        // 模式术语
-        const CharType *schema_term = get_string_literal("schema");
+        // 模式术语。两层模型无 schema 层, 返回空串, 告知应用不使用 schema 限定。
+        const CharType *schema_term =
+            pConn->getConfigForUpdate().namespaceSchema
+                ? get_string_literal("schema")
+                : get_string_literal("");
         size_t len = std::char_traits<CharType>::length(schema_term);
         if (InfoValuePtr && BufferLength > 0) {
           if constexpr (std::is_same_v<CharType, char>) {
@@ -899,12 +904,14 @@ SQLRETURN GetInfoImpl(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
       }
       case SQL_SCHEMA_USAGE: {
         // Schema 用法位掩码: 告诉应用在哪些语句中可以使用 schema 限定符。
-        // MaxCompute 支持 schema.table 出现在 DML、DDL、UDF 调用、GRANT/REVOKE
-        // 中; 不支持索引(INDEX_DEFINITION)。
+        // 三层模型支持 schema.table 出现在 DML、DDL、UDF 调用、GRANT/REVOKE 中;
+        // 两层模型(namespaceSchema=false)无 schema 层, 返回 0 告知应用不使用 schema 限定。
         if (InfoValuePtr) {
           *(SQLUINTEGER *)InfoValuePtr =
-              SQL_SU_DML_STATEMENTS | SQL_SU_PROCEDURE_INVOCATION |
-              SQL_SU_TABLE_DEFINITION | SQL_SU_PRIVILEGE_DEFINITION;
+              pConn->getConfigForUpdate().namespaceSchema
+                  ? (SQL_SU_DML_STATEMENTS | SQL_SU_PROCEDURE_INVOCATION |
+                     SQL_SU_TABLE_DEFINITION | SQL_SU_PRIVILEGE_DEFINITION)
+                  : 0u;
         }
         info_length = sizeof(SQLUINTEGER);
         break;
