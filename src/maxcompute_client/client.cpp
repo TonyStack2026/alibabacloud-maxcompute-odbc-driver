@@ -295,49 +295,15 @@ class MaxComputeClientImpl {
                            "Query did not complete within 1h timeout.");
   }
 
-  Result<std::string> getSchemaJson(const ExecuteSQLRequest &request) {
-    ExecuteSQLRequest explain_request = request;
-    explain_request.query = "explain output " + request.query;
-
-    (*explain_request.options->hints)["odps.sql.select.output.format"] = "json";
-
-    MCO_LOG_DEBUG("Fetching schema via EXPLAIN CODE: {}",
-                  explain_request.query);
-
-    auto instance_result = submitQuery(explain_request);
-    if (!instance_result.has_value()) {
-      return makeError<std::string>(instance_result.error().code,
-                                    instance_result.error().message);
-    }
-
-    Instance instance = instance_result.value();
-    auto wait_result = waitForSuccess(instance);
-    if (!wait_result.has_value()) {
-      return makeError<std::string>(wait_result.error().code,
-                                    wait_result.error().message);
-    }
-
-    // Now fetch the result (which should be the JSON schema)
-    // 注意：getSchemaJson 用于 EXPLAIN 查询，通常不需要 MaxQA 支持
-    // 传递 nullptr 作为 maxQAInfo 参数
-    auto raw_result = getRawResult(instance.id, nullptr);
-    if (!raw_result.has_value()) {
-      return makeError<std::string>(raw_result.error().code,
-                                    raw_result.error().message);
-    }
-
-    std::string schema_json = raw_result.value();
-    MCO_LOG_DEBUG("Schema JSON received: {}", schema_json);
-    return makeSuccess(schema_json);
-  }
-
   Result<std::vector<std::string>> listSchemas() {
     std::string path;
     std::vector<std::string> res;
     if (config_.namespaceSchema) {
       res.emplace_back(config_.schema);
     } else {
-      res.emplace_back("default");
+      // 两层模型(namespaceSchema=false)无 schema 层, 返回空串占位, 避免 BI 工具
+      // 拿到 "default" 后生成 default.table 限定名(两层模型下不存在 default schema)。
+      res.emplace_back("");
     }
     return makeSuccess(res);
 
@@ -540,18 +506,30 @@ class MaxComputeClientImpl {
 // ===================================================================
 class ResultStreamImpl : public ResultStream {
  public:
-  ResultStreamImpl(internal::MaxComputeClientImpl &sdk_impl, Instance instance,
-                   std::shared_ptr<const ResultSetSchema> schema)
+  ResultStreamImpl(internal::MaxComputeClientImpl &sdk_impl, Instance instance)
       : m_sdk_impl(sdk_impl),
         m_instance(std::move(instance)),
-        m_query_id(m_instance.id),
-        m_schema(std::move(schema)) {
+        m_query_id(m_instance.id) {
     MCO_LOG_DEBUG("ResultStream created for QueryID: {}", m_query_id);
   }
 
   const std::string &getId() const override { return m_query_id; }
 
   Result<const ResultSetSchema *> getSchema() override {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    // schema 惰性获取: 首次调用时初始化数据流(Tunnel 会话或 raw 回退),
+    // 之后 m_schema 作为缓存复用。
+    if (m_schema) {
+      return makeSuccess(m_schema.get());
+    }
+    auto ready = ensureStreamReadyLocked();
+    if (!ready.has_value()) {
+      return makeError<const ResultSetSchema *>(ready.error().code,
+                                                ready.error().message);
+    }
+    if (m_delegate) {
+      return m_delegate->getSchema();
+    }
     return makeSuccess(m_schema.get());
   }
 
@@ -568,19 +546,25 @@ class ResultStreamImpl : public ResultStream {
 
     // 首次调用时，需要等待查询完成并初始化数据流
     if (!m_stream_initialized) {
-      auto wait_result = waitForQueryCompletion();
-      if (!wait_result.has_value()) {
+      auto ready = ensureStreamReadyLocked();
+      if (!ready.has_value()) {
         m_end_of_stream = true;
-        return makeError<std::optional<Record>>(wait_result.error().code,
-                                                wait_result.error().message);
+        return makeError<std::optional<Record>>(ready.error().code,
+                                                ready.error().message);
       }
+    }
 
-      auto init_result = initializeTunnel();
-      if (!init_result.has_value()) {
+    // 非表格结果(Tunnel 打不开时回退): 由 delegate 提供单列结果。
+    if (m_delegate) {
+      auto record_result = m_delegate->fetchNextRow();
+      if (!record_result.has_value()) {
         m_end_of_stream = true;
-        return makeError<std::optional<Record>>(init_result.error().code,
-                                                init_result.error().message);
+        return record_result;
       }
+      if (!record_result.value().has_value()) {
+        m_end_of_stream = true;
+      }
+      return record_result;
     }
 
     if (!m_bufferedReader) {
@@ -654,12 +638,103 @@ class ResultStreamImpl : public ResultStream {
       m_stream_initialized = true;
       return makeSuccess();
     } catch (const std::exception &e) {
-      MCO_LOG_ERROR("Failed to initialize tunnel session:" +
-                    std::string(e.what()));
+      std::string msg = e.what();
+      MCO_LOG_ERROR("Failed to initialize tunnel session:" + msg);
+      if (isNonDownloadableResultError(msg)) {
+        // 非表格结果(无可下载数据): 交由上层降级为 raw result。
+        return makeError<void>(
+            ErrorCode::ResultNotDownloadable,
+            "Instance has no downloadable tabular result: " + msg);
+      }
+      // 网络/超时/服务端(5xx)等真实异常: 原样上报, 不做降级。
       return makeError<void>(
-          ErrorCode::UnknownError,
-          "Failed to initialize tunnel session: " + std::string(e.what()));
+          ErrorCode::NetworkError,
+          "Failed to initialize tunnel session: " + msg);
     }
+  }
+
+  // 判定 Tunnel 下载会话初始化失败是否属于"无可下载表格结果"(非表格语句),
+  // 从而可安全降级为单列 raw result。仅以下情形返回 true:
+  //  - 会话已建立但响应缺少 Schema 对象;
+  //  - 服务端以非可重试的 HTTP 4xx 明确拒绝(排除 408/429)。
+  // 传输失败、5xx、408、429 等瞬时/服务端异常一律返回 false, 交由上层上报,
+  // 避免把偶发 Tunnel 异常误判成单列文本结果。
+  static bool isNonDownloadableResultError(const std::string &msg) {
+    if (msg.find("missing 'Schema'") != std::string::npos) {
+      return true;
+    }
+    const std::string marker = "failed with status: ";
+    auto pos = msg.find(marker);
+    if (pos == std::string::npos) {
+      return false;  // 传输失败等: 视为真实错误
+    }
+    pos += marker.size();
+    int status = 0;
+    for (size_t i = pos; i < msg.size() && i - pos < 3 && msg[i] >= '0' &&
+                         msg[i] <= '9';
+         ++i) {
+      status = status * 10 + (msg[i] - '0');
+    }
+    if (status < 400 || status >= 500) {
+      return false;  // 非 4xx(含 5xx/未知): 真实错误
+    }
+    if (status == 408 || status == 429) {
+      return false;  // 可重试的瞬时 4xx: 真实错误
+    }
+    return true;  // 其它 4xx: 非表格/无可下载结果
+  }
+
+  // 等待查询完成并准备好数据流。假定调用方已持有 m_mutex。
+  // - 表格结果: 打开 Tunnel 下载会话, 并从会话取回 schema。
+  // - 仅当 Tunnel 明确表明"无可下载表格结果"(ResultNotDownloadable, 如 DDL
+  //   等非表格语句)时, 才回退到单列 "Result" raw result。
+  //   网络/超时/服务端等真实异常直接上报, 不做降级, 避免掩盖问题。
+  Result<void> ensureStreamReadyLocked() {
+    if (m_stream_initialized) {
+      return makeSuccess();
+    }
+
+    auto wait_result = waitForQueryCompletion();
+    if (!wait_result.has_value()) {
+      return wait_result;
+    }
+
+    auto init_result = initializeTunnel();
+    if (!init_result.has_value()) {
+      if (init_result.error().code != ErrorCode::ResultNotDownloadable) {
+        // 真实异常(网络/超时/5xx 等): 直接上报, 不做 raw 回退。
+        return init_result;
+      }
+      // 确认为非表格/无可下载结果, 按 raw result 处理。
+      MCO_LOG_INFO(
+          "Tunnel reports no downloadable tabular result, falling back to raw "
+          "result for QueryID: {}",
+          m_query_id);
+      const MaxQASessionInfo *maxQAInfo =
+          m_instance.maxQAInfo.isMaxQA ? &m_instance.maxQAInfo : nullptr;
+      auto raw_result = m_sdk_impl.getRawResult(m_instance.id, maxQAInfo);
+      if (!raw_result.has_value()) {
+        return makeError<void>(raw_result.error().code,
+                               raw_result.error().message);
+      }
+      m_delegate = StaticResultSetBuilder()
+                       .addColumn("Result", PrimitiveTypeInfo(OdpsType::STRING))
+                       .addRowValues(raw_result.value())
+                       .build();
+      m_stream_initialized = true;
+      return makeSuccess();
+    }
+
+    // Tunnel 打开成功; 从下载会话取回 schema。
+    if (!m_schema && m_downloadSession) {
+      m_schema = m_downloadSession->GetSchema();
+    }
+    if (!m_schema) {
+      return makeError<void>(
+          ErrorCode::ParseError,
+          "Schema not available from Tunnel download session");
+    }
+    return makeSuccess();
   }
 
   internal::MaxComputeClientImpl &m_sdk_impl;
@@ -669,6 +744,8 @@ class ResultStreamImpl : public ResultStream {
 
   std::unique_ptr<DownloadSession> m_downloadSession;
   std::unique_ptr<ConcurrentBufferedRecordReader> m_bufferedReader;
+  // 非表格结果(Tunnel 打不开时回退)时承接单列结果的委托流。
+  std::unique_ptr<ResultStream> m_delegate;
 
   bool m_stream_initialized = false;
   bool m_end_of_stream = false;
@@ -694,6 +771,8 @@ MaxComputeClient &MaxComputeClient::operator=(MaxComputeClient &&) noexcept =
 Result<std::string> MaxComputeClient::getConnection() {
   return impl_->getConnection();
 }
+
+const Config &MaxComputeClient::getConfig() const { return impl_->getConfig(); }
 
 Result<std::unique_ptr<ResultStream>> MaxComputeClient::executeQuery(
     const std::string &query, const std::string &globalSettings) {
@@ -785,38 +864,10 @@ Result<std::unique_ptr<ResultStream>> MaxComputeClient::executeQuery(
     MCO_LOG_INFO("Added quota hint: {}", config_.quotaName.value());
   }
 
-  // 3. 先通过 EXPLAIN CODE 获取 schema（同步阻塞）
-  auto schema_json_result = impl_->getSchemaJson(original_request);
-  if (!schema_json_result.has_value()) {
-    return makeError<std::unique_ptr<ResultStream>>(
-        schema_json_result.error().code,
-        "Failed to retrieve schema: " + schema_json_result.error().message);
-  }
-  std::string schema_json = schema_json_result.value();
-  std::shared_ptr<const ResultSetSchema> schema;
-  bool non_tabular_result = false;
-  if (schema_json.empty() ||
-      schema_json.find("nothing to explain") != std::string::npos) {
-    non_tabular_result = true;
-  } else {
-    auto schema_parse_result = ResultSetSchema::FromJson(schema_json);
-    if (!schema_parse_result.has_value()) {
-      return makeError<std::unique_ptr<ResultStream>>(
-          ErrorCode::ParseError, "Failed to parse schema JSON: " +
-                                     schema_parse_result.error().message);
-    }
-    schema = std::make_shared<const ResultSetSchema>(
-        std::move(schema_parse_result.value()));
-  }
-
-  auto endTime = std::chrono::steady_clock::now();
-  auto duration =
-      std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime)
-          .count();
-  MCO_LOG_INFO("Get result schema succeeded in {} ms", duration);
-  startTime = std::chrono::steady_clock::now();
-
-  // 4. 提交真实查询（异步，立即返回 QueryID）
+  // 3. 提交真实查询（异步，立即返回 QueryID）。
+  //    schema 不再通过 EXPLAIN OUTPUT 预探测；改由 ResultStreamImpl 在首次
+  //    metadata/fetch 时从 Instance Tunnel 下载会话惰性获取（非表格结果则
+  //    回退为单列 raw result）。
   auto instance_result = impl_->submitQuery(original_request);
   if (!instance_result.has_value()) {
     return makeError<std::unique_ptr<ResultStream>>(
@@ -825,36 +876,11 @@ Result<std::unique_ptr<ResultStream>> MaxComputeClient::executeQuery(
   }
   Instance instance = instance_result.value();
 
-  // 非结构化结果通过 ODPS Worker 返回 StaticResultStream
-  if (non_tabular_result) {
-    // b. 等待查询完成
-    auto wait_result = impl_->waitForSuccess(instance);
-    if (!wait_result.has_value()) {
-      return makeError<std::unique_ptr<ResultStream>>(
-          wait_result.error().code, wait_result.error().message);
-    }
-    // c. 获取非结构化的原始结果（传递 MaxQA 信息）
-    const MaxQASessionInfo *maxQAInfo =
-        instance.maxQAInfo.isMaxQA ? &instance.maxQAInfo : nullptr;
-    auto raw_result = impl_->getRawResult(instance.id, maxQAInfo);
-    if (!raw_result.has_value()) {
-      return makeError<std::unique_ptr<ResultStream>>(
-          raw_result.error().code,
-          "Failed to get raw result: " + raw_result.error().message);
-    }
-    // e. 创建一个包含单行单列数据的 Record
-    auto stream = StaticResultSetBuilder()
-                      .addColumn("Result", PrimitiveTypeInfo(OdpsType::STRING))
-                      .addRowValues(raw_result.value())
-                      .build();
-    return makeSuccess(std::move(stream));
-  }
   auto logview = generateLogview(instance.id);
-  // 5. 结构化结果通过 InstanceTunnel 创建 ResultStreamImpl 实现
-  auto stream =
-      std::make_unique<ResultStreamImpl>(*impl_, std::move(instance), schema);
-  endTime = std::chrono::steady_clock::now();
-  duration =
+  // 4. 统一通过 InstanceTunnel 创建惰性 ResultStreamImpl。
+  auto stream = std::make_unique<ResultStreamImpl>(*impl_, std::move(instance));
+  auto endTime = std::chrono::steady_clock::now();
+  auto duration =
       std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime)
           .count();
   MCO_LOG_INFO("Submit query succeeded in {} ms, logview: {}", duration,

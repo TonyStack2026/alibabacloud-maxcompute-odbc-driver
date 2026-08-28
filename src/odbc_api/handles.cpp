@@ -63,7 +63,9 @@ SQLRETURN ConnHandle::connect(const std::string &dsn, const std::string &user,
 
     // 6. 创建 SDK 客户端并建立连接
     MCO_LOG_DEBUG("Creating MaxCompute client with parsed configuration");
-    m_sdk = std::make_unique<MaxComputeClient>(m_config);
+    // 通过 setSDK 创建, 其内部会把服务端探测后的真实配置(如 namespaceSchema)
+    // 回写到 m_config, 保证元数据函数读到正确的 schema 模型。
+    setSDK(std::make_unique<MaxComputeClient>(m_config));
 
     // 7. 如果启用了交互模式，调用 getConnection API 获取 MaxQA Session ID
     if (m_config.interactiveMode) {
@@ -202,7 +204,8 @@ SQLRETURN StmtHandle::describeCol(SQLUSMALLINT col_num, SQLCHAR *col_name_buf,
 
   auto result = m_result_stream->getSchema();
   if (!result.has_value()) {
-    addDiagRecord({0, "00000", result.error().message});
+    addDiagRecord({0, "HY000", result.error().message});
+    return SQL_ERROR;
   }
   auto &schema = result.value();
   if (col_num == 0 || col_num > schema->getColumnCount()) {
@@ -254,7 +257,8 @@ SQLRETURN StmtHandle::bindCol(SQLUSMALLINT col_num, SQLSMALLINT target_type,
     // 将向量大小调整为列数，所有未绑定的列将保持默认构造状态
     auto result = m_result_stream->getSchema();
     if (!result.has_value()) {
-      addDiagRecord({0, "00000", result.error().message});
+      addDiagRecord({0, "HY000", result.error().message});
+      return SQL_ERROR;
     }
     auto &schema = result.value();
     m_bindings.resize(schema->getColumnCount());
@@ -357,7 +361,8 @@ SQLRETURN StmtHandle::getColAttribute(SQLUSMALLINT column_number,
 
   auto result = m_result_stream->getSchema();
   if (!result.has_value()) {
-    addDiagRecord({0, "00000", result.error().message});
+    addDiagRecord({0, "HY000", result.error().message});
+    return SQL_ERROR;
   }
   auto &schema = result.value();
   if (column_number == 0 || column_number > schema->getColumnCount()) {
@@ -723,7 +728,8 @@ SQLRETURN StmtHandle::getData(SQLUSMALLINT col_num, SQLSMALLINT target_type,
 
   auto result = m_result_stream->getSchema();
   if (!result.has_value()) {
-    addDiagRecord({0, "00000", result.error().message});
+    addDiagRecord({0, "HY000", result.error().message});
+    return SQL_ERROR;
   }
   auto &schema = result.value();
   if (col_num == 0 || col_num > schema->getColumnCount()) {
@@ -1043,7 +1049,9 @@ SQLRETURN StmtHandle::columns(const std::string &catalog,
     } else if (config.namespaceSchema && !config.schema.empty()) {
       schemaName = config.schema;
     } else {
-      schemaName = "default";
+      // 两层模型(namespaceSchema=false)无 schema 层, 用空串,
+      // 避免生成 default.table 限定名。
+      schemaName = "";
     }
 
     auto table_result = m_parent_conn->getSDK()->getTable(schemaName, table);
@@ -1055,6 +1063,12 @@ SQLRETURN StmtHandle::columns(const std::string &catalog,
     }
 
     Table &fetched_table = table_result.value();
+
+    // 两层模型下, 服务端返回的 schema_name 可能仍为 "default", 清空它
+    // 以保证 SQLColumns 结果的 TABLE_SCHEM 与两层语义一致(空 schema)。
+    if (!config.namespaceSchema) {
+      fetched_table.schema_name = "";
+    }
 
     auto stream_result = convertTable(fetched_table, column_pattern);
 
