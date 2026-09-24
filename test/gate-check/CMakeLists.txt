@@ -9,8 +9,9 @@
 #   cmake -S test/gate-check -B <dir> -DMCO_GATE_SCENARIO=registered -DBUILD_TESTING=ON   # must PASS
 #   cmake -S test/gate-check -B <dir> -DMCO_GATE_SCENARIO=build-only -DBUILD_TESTING=OFF  # must PASS
 #
-# scripts/check_test_gate.ps1 drives the four scenarios with those expectations
-# and is what CI runs on Linux and Windows (see .github/workflows/ci.yml).
+# scripts/check_test_gate.cmake drives the four scenarios with those expectations
+# and is what CI runs on Linux and Windows (see the test-gate job in
+# .github/workflows/ci.yml).
 cmake_minimum_required(VERSION 3.20)
 # NONE: the fixture compiles nothing, it only exercises the gate logic.
 project(mco_test_gate_check NONE)
