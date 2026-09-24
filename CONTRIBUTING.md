@@ -55,6 +55,20 @@ export VCPKG_ROOT=/path/to/vcpkg
 cd build && ctest --output-on-failure
 ```
 
+`BUILD_TESTING=ON` (the default) makes the suite mandatory: configure fails if
+Google Test is missing or if no test case is registered, so a build that quietly
+ran zero tests can no longer look like a pass. Use `-DBUILD_TESTING=OFF` when you
+intentionally want build-only/packaging output; the configure log then states that
+no tests were built or run.
+
+```bash
+pwsh ./scripts/check_test_gate.ps1        # verifies the gate fails closed
+pwsh ./scripts/run_unit_tests.ps1 -BuildDir build -MinTests 5
+```
+
+If you add or remove a test suite, update `MCO_EXPECTED_UNIT_TESTS` in
+`test/CMakeLists.txt` and `-MinTests` in `.github/workflows/ci.yml` in the same PR.
+
 ## Coding Standards
 
 ### Style

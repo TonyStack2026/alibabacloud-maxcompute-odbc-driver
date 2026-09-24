@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `BUILD_TESTING` build modes for the C++ unit-test suite: with the default `ON`,
+  configuring fails when Google Test is unavailable or when a testing build
+  registers no test case, instead of silently skipping the whole suite;
+  `-DBUILD_TESTING=OFF` is the explicit build-only mode and says so in the log.
+- `test/gate-check` fixture plus `scripts/check_test_gate.ps1`, which verify that
+  the gate fails closed without needing the driver's dependencies.
+- CI executes `ctest` on Linux, macOS and Windows and asserts the number of
+  registered cases; a dedicated job checks the gate on Linux and Windows.
+
+### Changed
+- `logging_test` now uses a per-case file under the platform temp directory
+  instead of the hard-coded `/tmp/mco_test_log.txt`, so it runs on Windows too and
+  no longer needs to be excluded from `ctest`.
+
 ## [1.0.0] - 2025-03-11
 
 ### Added
