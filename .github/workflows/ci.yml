@@ -35,8 +35,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Verify BUILD_TESTING behaviour
-        shell: pwsh
-        run: ./scripts/check_test_gate.ps1
+        run: cmake -P scripts/check_test_gate.cmake
 
   build-windows:
     runs-on: windows-latest
@@ -82,7 +81,7 @@ jobs:
         shell: pwsh
         run: |
           $env:PATH = "${{ github.workspace }}\build\vcpkg_installed\x64-windows\bin;$env:PATH"
-          ./scripts/run_unit_tests.ps1 -BuildDir build -MinTests 5
+          cmake -DBUILD_DIR=build -DMIN_TESTS=5 -P scripts/run_unit_tests.cmake
 
   build-macos:
     runs-on: macos-latest
@@ -123,8 +122,7 @@ jobs:
           cmake --build build --parallel
 
       - name: Run unit tests
-        shell: pwsh
-        run: ./scripts/run_unit_tests.ps1 -BuildDir build -MinTests 5
+        run: cmake -DBUILD_DIR=build -DMIN_TESTS=5 -P scripts/run_unit_tests.cmake
 
   build-linux:
     runs-on: ubuntu-latest
@@ -166,5 +164,4 @@ jobs:
           cmake --build build --parallel
 
       - name: Run unit tests
-        shell: pwsh
-        run: ./scripts/run_unit_tests.ps1 -BuildDir build -MinTests 5
+        run: cmake -DBUILD_DIR=build -DMIN_TESTS=5 -P scripts/run_unit_tests.cmake

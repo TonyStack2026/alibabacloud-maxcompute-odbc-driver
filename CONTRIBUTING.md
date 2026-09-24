@@ -62,12 +62,12 @@ intentionally want build-only/packaging output; the configure log then states th
 no tests were built or run.
 
 ```bash
-pwsh ./scripts/check_test_gate.ps1        # verifies the gate fails closed
-pwsh ./scripts/run_unit_tests.ps1 -BuildDir build -MinTests 5
+cmake -P scripts/check_test_gate.cmake                        # the gate must fail closed
+cmake -DBUILD_DIR=build -P scripts/run_unit_tests.cmake        # same step CI runs
 ```
 
 If you add or remove a test suite, update `MCO_EXPECTED_UNIT_TESTS` in
-`test/CMakeLists.txt` and `-MinTests` in `.github/workflows/ci.yml` in the same PR.
+`test/CMakeLists.txt` and `-DMIN_TESTS` in `.github/workflows/ci.yml` in the same PR.
 
 ## Coding Standards
 

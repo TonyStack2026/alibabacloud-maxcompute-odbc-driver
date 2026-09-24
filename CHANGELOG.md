@@ -12,10 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configuring fails when Google Test is unavailable or when a testing build
   registers no test case, instead of silently skipping the whole suite;
   `-DBUILD_TESTING=OFF` is the explicit build-only mode and says so in the log.
-- `test/gate-check` fixture plus `scripts/check_test_gate.ps1`, which verify that
-  the gate fails closed without needing the driver's dependencies.
-- CI executes `ctest` on Linux, macOS and Windows and asserts the number of
-  registered cases; a dedicated job checks the gate on Linux and Windows.
+- `test/gate-check` fixture plus `scripts/check_test_gate.cmake`, which verify that
+  the gate fails closed without needing the driver's dependencies. Both harnesses are
+  CMake scripts, so they run unchanged on Linux, macOS and Windows and need nothing
+  but CMake to reproduce.
+- CI executes `ctest` on Linux, macOS and Windows through
+  `scripts/run_unit_tests.cmake` and asserts the number of registered cases; a
+  dedicated job checks the gate itself on Linux and Windows.
 
 ### Changed
 - `logging_test` now uses a per-case file under the platform temp directory

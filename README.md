@@ -377,12 +377,12 @@ CI runs the suites on Linux, macOS and Windows, and separately proves that the
 gate fails closed:
 
 ```bash
-pwsh ./scripts/check_test_gate.ps1   # missing dependency and zero-case builds must fail
-pwsh ./scripts/run_unit_tests.ps1 -BuildDir build -MinTests 5
+cmake -P scripts/check_test_gate.cmake                    # missing dependency and zero-case builds must fail
+cmake -DBUILD_DIR=build -P scripts/run_unit_tests.cmake   # runs the cases and checks the count
 ```
 
 When a suite is added or removed, update `MCO_EXPECTED_UNIT_TESTS` in
-`test/CMakeLists.txt` and the `-MinTests` value in `.github/workflows/ci.yml` in
+`test/CMakeLists.txt` and the `-DMIN_TESTS` value in `.github/workflows/ci.yml` in
 the same change.
 
 ### Unit Tests

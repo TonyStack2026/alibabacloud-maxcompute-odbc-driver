@@ -269,10 +269,10 @@ which ran nothing. `-DBUILD_TESTING=OFF` is the explicit build-only / packaging 
 and the configure log states that no tests were built or run.
 
 CI executes every suite on Linux, macOS and Windows and asserts the registered case
-count; `scripts/check_test_gate.ps1` proves the gate itself fails closed and
-`scripts/run_unit_tests.ps1` is the local equivalent of the CI test step.
+count; `cmake -P scripts/check_test_gate.cmake` proves the gate itself fails closed
+and `cmake -P scripts/run_unit_tests.cmake` is the local equivalent of the CI test step.
 Adding or removing a suite means updating `MCO_EXPECTED_UNIT_TESTS` and the
-`-MinTests` argument in `.github/workflows/ci.yml` in the same PR.
+`DMIN_TESTS` argument in `.github/workflows/ci.yml` in the same PR.
 
 ### E2E Tests (Python pyodbc)
 Located in `test/e2e/`. Requires a running MaxCompute service and registered ODBC driver. Tests cover connection, queries, metadata, data types, error handling.
