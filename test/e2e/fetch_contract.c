@@ -444,5 +444,9 @@ int main(void) {
 
   printf("\n%s (%d failed checks)\n",
          g_failures ? "CONTRACT FAILURES" : "ALL CHECKS PASSED", g_failures);
+  /* Machine-readable tail, printed once per run, so a captured log stands on
+   * its own as a complete round. */
+  printf("SUMMARY: %d failed checks, driver=%s\n", g_failures,
+         getenv("MCO_DRIVER_PATH") ? getenv("MCO_DRIVER_PATH") : "?");
   return g_failures > 0 ? 1 : 0;
 }
