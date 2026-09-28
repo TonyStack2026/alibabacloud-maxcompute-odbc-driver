@@ -1,7 +1,9 @@
 #include "maxcompute_odbc/odbc_api/encoding.h"
+#include <cstdint>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <string>
+#include <vector>
 
 using maxcompute_odbc::encoding::WriteUtf8AsCharset;
 
@@ -110,4 +112,91 @@ TEST(EncodingTest, ZeroSizedBufferReportsLengthOnly) {
   // the converted length so callers can size a buffer.
   size_t total = WriteUtf8AsCharset(kNiHaoUtf8, "UTF-8", nullptr, 0);
   EXPECT_EQ(total, kNiHaoUtf8.size());
+}
+
+// ---------------------------------------------------------------------------
+// Helpers used by SQLGetData's segmented read: whole-value encoding plus the
+// character model the segmenter is allowed to rely on.
+// ---------------------------------------------------------------------------
+
+using maxcompute_odbc::encoding::CharPayload;
+using maxcompute_odbc::encoding::EncodeCharPayload;
+using maxcompute_odbc::encoding::Utf16FromUtf8;
+using maxcompute_odbc::fetch::Dbcs;
+
+TEST(EncodeCharPayloadTest, Utf8IsPassedThroughAndReportedAsUtf8) {
+  CharPayload p = EncodeCharPayload(kNiHaoUtf8, "UTF-8");
+  EXPECT_TRUE(p.utf8);
+  EXPECT_EQ(p.dbcs, Dbcs::None);
+  EXPECT_EQ(p.bytes, kNiHaoUtf8);
+}
+
+TEST(EncodeCharPayloadTest, GbkReportsItsTwoByteModel) {
+  CharPayload p = EncodeCharPayload(kNiHaoUtf8, "gbk");
+  if (p.utf8) {
+    GTEST_SKIP() << "GBK not available on this platform; helper fell back to "
+                    "UTF-8.";
+  }
+  EXPECT_EQ(p.dbcs, Dbcs::Gbk);
+  EXPECT_EQ(p.bytes, kNiHaoGbk);
+  // Whole value, nothing truncated: the caller decides where to cut.
+  EXPECT_EQ(p.bytes.size(), kNiHaoGbk.size());
+}
+
+TEST(EncodeCharPayloadTest, UnknownCharsetFallsBackToUtf8) {
+  CharPayload p =
+      EncodeCharPayload(kNiHaoUtf8, "DEFINITELY-NOT-A-REAL-CHARSET");
+  EXPECT_TRUE(p.utf8);
+  EXPECT_EQ(p.dbcs, Dbcs::None);
+  EXPECT_EQ(p.bytes, kNiHaoUtf8);
+}
+
+TEST(EncodeCharPayloadTest, AgreesWithWriteUtf8AsCharsetOnWhatFits) {
+  // The bound-column path (WriteUtf8AsCharset) and the segmented path
+  // (EncodeCharPayload) must report the same total length for the same value,
+  // otherwise a column reads differently depending on which function the
+  // application called.
+  const char *charsets[] = {"UTF-8", "GBK", "BIG5", "SHIFT_JIS", "EUC-KR"};
+  for (const char *charset : charsets) {
+    char buf[64] = {};
+    size_t total = WriteUtf8AsCharset(kNiHaoUtf8, charset, buf, sizeof(buf));
+    CharPayload p = EncodeCharPayload(kNiHaoUtf8, charset);
+    EXPECT_EQ(total, p.bytes.size()) << "charset=" << charset;
+    EXPECT_EQ(0, std::memcmp(buf, p.bytes.data(), total))
+        << "charset=" << charset;
+  }
+}
+
+TEST(Utf16FromUtf8Test, AsciiAndBmp) {
+  EXPECT_EQ(Utf16FromUtf8("abc"), (std::vector<uint16_t>{'a', 'b', 'c'}));
+  EXPECT_EQ(Utf16FromUtf8(kNiHaoUtf8), (std::vector<uint16_t>{0x4F60, 0x597D}));
+}
+
+TEST(Utf16FromUtf8Test, AstralCodepointBecomesSurrogatePair) {
+  // U+1F600 is F0 9F 98 80 in UTF-8.
+  EXPECT_EQ(Utf16FromUtf8("\xF0\x9F\x98\x80"),
+            (std::vector<uint16_t>{0xD83D, 0xDE00}));
+}
+
+TEST(Utf16FromUtf8Test, MalformedBytesBecomeOneReplacementEach) {
+  // A lone continuation byte, then the two leading bytes of a 3-byte sequence
+  // that never completes: one U+FFFD per byte that could not be decoded, so a
+  // caller can always tell that something was dropped.
+  const std::vector<uint16_t> units = Utf16FromUtf8("\x80\xE4\xBD");
+  ASSERT_EQ(units.size(), 3u);
+  EXPECT_EQ(units[0], 0xFFFD);
+  EXPECT_EQ(units[1], 0xFFFD);
+  EXPECT_EQ(units[2], 0xFFFD);
+}
+
+TEST(Utf16FromUtf8Test, OverlongEncodingIsRejectedNotDecoded) {
+  // C0 80 is the overlong form of NUL.
+  const std::vector<uint16_t> units = Utf16FromUtf8("\xC0\x80");
+  ASSERT_EQ(units.size(), 2u);
+  EXPECT_EQ(units[0], 0xFFFD);
+  EXPECT_EQ(units[1], 0xFFFD);
+}
+
+TEST(Utf16FromUtf8Test, EmptyInputProducesNoUnits) {
+  EXPECT_TRUE(Utf16FromUtf8("").empty());
 }

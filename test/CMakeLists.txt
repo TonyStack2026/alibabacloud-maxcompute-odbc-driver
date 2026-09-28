@@ -62,6 +62,14 @@ if(GTest_FOUND)
     target_link_libraries(encoding_test PRIVATE common test_main ${ODBC_FRAMEWORKS})
     add_test(NAME encoding_test COMMAND encoding_test)
 
+    # SQLGetData 分段读取契约测试: 直接编译 column_fetch.cpp 进测试二进制,
+    # 只依赖 sql.h 的类型, 不需要驱动 so 的符号导出, 也不需要网络连接.
+    add_executable(column_fetch_test
+        unit/column_fetch_test.cpp
+        ${CMAKE_SOURCE_DIR}/src/odbc_api/column_fetch.cpp)
+    target_link_libraries(column_fetch_test PRIVATE test_main ${ODBC_FRAMEWORKS})
+    add_test(NAME column_fetch_test COMMAND column_fetch_test)
+
     message(STATUS "Google Test found. Building all tests.")
 else()
     message(STATUS "Google Test not found. Skipping tests.")

@@ -7,8 +7,10 @@
 #endif
 
 #include "maxcompute_odbc/maxcompute_client/models.h"  // For ColumnData
+#include <cstdint>
 #include <sql.h>
 #include <sqlext.h>
+#include <vector>
 #include "handles.h"  // For ColumnBinding
 
 namespace maxcompute_odbc {
@@ -19,6 +21,19 @@ namespace maxcompute_odbc {
 SQLRETURN convertAndWrite(const ColumnData &data,
                           const StmtHandle::ColumnBinding &binding,
                           const std::string &client_charset = "UTF-8");
+
+// 把列值转成字符目标 (SQL_C_CHAR / SQL_C_WCHAR) 应当看到的文本.
+// 绑定写入 (SQLFetch) 和 SQLGetData 的分段读取共用这一个实现.
+std::string ColumnDataToText(const ColumnData &data);
+
+// 构造字符/二进制目标的完整负载 (不含终止符) 和描述"能不能切、怎么切"的
+// layout. 非字符且非二进制的 target_type, 或二进制目标拿到非字节值时返回错误,
+// 调用方据此退回 convertAndWrite 的定长转换路径.
+Result<void> BuildCharacterPayload(const ColumnData &data,
+                                   SQLSMALLINT target_type,
+                                   const std::string &client_charset,
+                                   std::vector<std::uint8_t> &payload,
+                                   fetch::Layout &layout);
 
 struct OdbcColumn {
   std::string name;  // 列名 (用于 SQLDescribeCol 的 ColumnName)
