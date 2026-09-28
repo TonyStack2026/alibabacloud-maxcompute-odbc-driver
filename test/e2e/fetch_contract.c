@@ -16,6 +16,14 @@
  * Every check prints one line; the exit code is the number of failed checks.
  * The queries use SELECT ... without FROM, so no table is created and nothing
  * needs cleaning up.
+ *
+ * Two things this probe learned the hard way, and encodes on purpose:
+ *   - a null TargetValuePtr is rejected by the Driver Manager itself (HY009),
+ *     so the "how long is it" call has to pass a real buffer with
+ *     BufferLength 0;
+ *   - unixODBC refuses SQLExecDirect while a cursor is open, so reusing a
+ *     statement goes through SQLFreeStmt(SQL_CLOSE) first, which is also the
+ *     path pyodbc and the CLI tools take.
  */
 
 #include <sql.h>
@@ -260,7 +268,9 @@ int main(void) {
         (long long)ind);
 
   /* --------------------------------------------------- length discovery */
-  ret = SQLGetData(stmt, 1, SQL_C_CHAR, NULL, 0, &ind);
+  /* A null TargetValuePtr is rejected by the Driver Manager (HY009), so length
+   * discovery is a real buffer with BufferLength 0. */
+  ret = SQLGetData(stmt, 1, SQL_C_CHAR, scratch, 0, &ind);
   CHECK(ret == SQL_SUCCESS_WITH_INFO && ind == 300,
         "BufferLength 0 reports the length: ret=%d indicator=%lld", ret,
         (long long)ind);
@@ -365,6 +375,13 @@ int main(void) {
   CHECK(ret == SQL_ERROR, "column 0 is rejected: ret=%d", ret);
 
   /* --------------------------------------------------- statement reuse */
+  /* unixODBC refuses SQLExecDirect on a handle whose cursor is still open, so
+   * an application that reuses a statement closes the cursor first - exactly
+   * what isql, pyodbc and BI tools do. The defect under test is what the driver
+   * remembers afterwards: the old code kept the previous query's last row, its
+   * end-of-stream flag and its SQLGetData offset, and SQLFreeStmt(SQL_CLOSE)
+   * discarded none of them, so the second result set read as empty. */
+  SQLFreeStmt(stmt, SQL_CLOSE);
   if (!query(stmt, "SELECT REPEAT('b', 40) AS second_col;", "second query"))
     return 2;
   ret = SQLFetch(stmt);
@@ -378,20 +395,47 @@ int main(void) {
           "second query's value is readable in full (%zu bytes)", r.out_len);
   }
 
-  /* --------------------------------------------------- SQL_CLOSE then reuse */
+  /* ------------------------------------- drained result, then reuse again */
+  /* The variant that bites BI tools: the first query is read to the end before
+   * the handle is reused. The old code kept the end-of-stream flag, so the
+   * second result set had no rows at all. */
+  while (SQLFetch(stmt) == SQL_SUCCESS) {
+  }
+  SQLFreeStmt(stmt, SQL_CLOSE);
+  if (!query(stmt, "SELECT REPEAT('d', 33) AS fourth_col;", "fourth query"))
+    return 2;
+  ret = SQLFetch(stmt);
+  CHECK(ret == SQL_SUCCESS,
+        "a drained result must not make the next query empty: ret=%d", ret);
+  if (ret == SQL_SUCCESS) {
+    ret = read_parts(stmt, 1, SQL_C_CHAR, 16, &r);
+    fill(want, sizeof(want), 'd', 33);
+    CHECK(r.out_len == 33 && strcmp(r.out, want) == 0,
+          "fourth query reads back in full (%zu bytes)", r.out_len);
+  }
+
+  /* --------------------------------------------------- bindings on reuse */
+  /* A column bound against the *previous* schema must not be written into the
+   * next result set's fetch, and unbinding has to take effect. */
+  char bound[64];
+  SQLLEN bound_ind = 0;
+  memset(bound, 0, sizeof(bound));
+  SQLBindCol(stmt, 1, SQL_C_CHAR, bound, sizeof(bound), &bound_ind);
+  SQLFreeStmt(stmt, SQL_UNBIND);
   SQLFreeStmt(stmt, SQL_CLOSE);
   if (!query(stmt, "SELECT REPEAT('c', 25) AS third_col;", "third query"))
     return 2;
   ret = SQLFetch(stmt);
-  if (ret == SQL_SUCCESS) {
-    ret = read_parts(stmt, 1, SQL_C_CHAR, 16, &r);
-    fill(want, sizeof(want), 'c', 25);
-    CHECK(r.out_len == 25 && strcmp(r.out, want) == 0,
-          "after SQLFreeStmt(SQL_CLOSE) the next result reads fine (%zu bytes)",
-          r.out_len);
-  } else {
-    CHECK(0, "after SQLFreeStmt(SQL_CLOSE) SQLFetch ret=%d", ret);
-  }
+  CHECK(ret == SQL_SUCCESS, "third query after SQL_UNBIND: SQLFetch ret=%d",
+        ret);
+  CHECK(bound[0] == '\0',
+        "an unbound column is not written on the next fetch (got \"%s\")",
+        bound);
+  ret = read_parts(stmt, 1, SQL_C_CHAR, 16, &r);
+  fill(want, sizeof(want), 'c', 25);
+  CHECK(r.out_len == 25 && strcmp(r.out, want) == 0,
+        "third query reads back in full through SQLGetData (%zu bytes)",
+        r.out_len);
 
   SQLFreeStmt(stmt, SQL_DROP);
   SQLDisconnect(dbc);
