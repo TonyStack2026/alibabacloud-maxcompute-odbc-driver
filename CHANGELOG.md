@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `SQLGetData` now returns variable-length character and binary values in
+  parts: repeated calls for the same column hand over the next segment, with
+  `SQL_SUCCESS_WITH_INFO` + SQLSTATE `01004` while data remains, a real length
+  on the last part, and `SQL_NO_DATA` once the value has been delivered.
+- Unit tests for the segmentation rules (`test/unit/column_fetch_test.cpp`)
+  and a Driver Manager level contract probe
+  (`test/e2e/fetch_contract.c`, build and run documented in
+  `test/e2e/E2E_TEST_README.md`).
+- E2E cases for long, multi-byte, NULL and empty values read through pyodbc
+  with small application buffers (`test/e2e/test_long_data.py`).
+
+### Fixed
+- `SQLGetData` reported `SQL_ERROR` for any value that did not fit the
+  application buffer, so long columns were unreadable instead of
+  continuable.
+- `SQLGetData` ignored `SQL_NULL_DATA` semantics for NULL values and required
+  no indicator variable; a NULL value with `StrLen_or_IndPtr == NULL` now
+  reports SQLSTATE `22002` as specified.
+- The `SQL_C_WCHAR` conversion computed its writable unit count as
+  `BufferLength / sizeof(SQLWCHAR) - 1`, which underflowed for `BufferLength`
+  0 or 1 and wrote past the caller's buffer; it also reported the number of
+  bytes that happened to fit as the length, so callers could not detect
+  truncation.
+- Reusing a statement handle returned no rows: `SQLExecute` /
+  `SQLExecDirect` / `SQLTables` / `SQLColumns` installed a new result stream
+  but kept the previous row, the end-of-stream flag, the fetched-row counter
+  and the `SQLGetData` read position. `SQLFreeStmt` now honours `SQL_CLOSE`
+  and `SQL_UNBIND` instead of ignoring every option but `SQL_DROP`.
+- A bound character column that did not fit its buffer aborted `SQLFetch` with
+  `SQL_ERROR` and no diagnostic record. It now behaves as specified: the value
+  is truncated in place, the remaining columns of the row are still converted,
+  and `SQLFetch` returns `SQL_SUCCESS_WITH_INFO` with SQLSTATE `01004`.
+- Statement diagnostics are cleared at the start of `SQLGetData`, so
+  `SQLGetDiagRec` no longer keeps returning the first record the handle ever
+  produced.
+
 ## [1.0.0] - 2025-03-11
 
 ### Added

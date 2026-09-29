@@ -253,4 +253,186 @@ size_t WriteUtf8AsCharset(const std::string &utf8, const std::string &charset,
 #endif
 }
 
+namespace {
+
+// Two-byte character model of a charset we recognise by name. Charsets we do
+// not (GB18030's 4-byte forms, and anything only iconv or a code page knows)
+// report Dbcs::None, which means "cut anywhere, stay byte-exact".
+fetch::Dbcs DbcsShapeOf(const std::string &charset_upper) {
+  if (charset_upper == "GBK" || charset_upper == "CP936" ||
+      charset_upper == "GB2312" || charset_upper == "EUC-KR" ||
+      charset_upper == "EUCKR" || charset_upper == "CP949") {
+    return fetch::Dbcs::Gbk;
+  }
+  if (charset_upper == "BIG5" || charset_upper == "CP950") {
+    return fetch::Dbcs::Big5;
+  }
+  if (charset_upper == "SHIFT_JIS" || charset_upper == "SHIFT-JIS" ||
+      charset_upper == "SJIS" || charset_upper == "CP932") {
+    return fetch::Dbcs::Sjis;
+  }
+  return fetch::Dbcs::None;
+}
+
+// Whole-string conversion, no truncation. *fell_back is set when the platform
+// could not convert and the UTF-8 input was returned unchanged (same rule as
+// WriteUtf8AsCharset, which callers of this must not disagree with).
+std::string ConvertUtf8ToCharsetFull(const std::string &utf8,
+                                     const std::string &charset_upper,
+                                     bool *fell_back) {
+  *fell_back = false;
+  if (utf8.empty()) return std::string();
+  if (charset_upper == "UTF-8" || charset_upper == "UTF8" ||
+      charset_upper.empty()) {
+    return utf8;
+  }
+
+#ifdef _WIN32
+  UINT cp = CharsetToCodePage(charset_upper);
+  if (cp == 0) {
+    WarnUnsupportedOnce(charset_upper, "unknown Windows code page");
+    *fell_back = true;
+    return utf8;
+  }
+  int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.data(),
+                                 static_cast<int>(utf8.size()), nullptr, 0);
+  if (wlen <= 0) {
+    *fell_back = true;
+    return utf8;
+  }
+  std::wstring wide(static_cast<size_t>(wlen), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()),
+                      &wide[0], wlen);
+  int need = WideCharToMultiByte(cp, 0, wide.data(), wlen, nullptr, 0, nullptr,
+                                 nullptr);
+  if (need <= 0) {
+    *fell_back = true;
+    return utf8;
+  }
+  std::string out(static_cast<size_t>(need), '\0');
+  WideCharToMultiByte(cp, 0, wide.data(), wlen, out.data(), need, nullptr,
+                      nullptr);
+  return out;
+#else
+  iconv_t cd = iconv_open(charset_upper.c_str(), "UTF-8");
+  if (cd == reinterpret_cast<iconv_t>(-1)) {
+    WarnUnsupportedOnce(charset_upper, "iconv_open failed");
+    *fell_back = true;
+    return utf8;
+  }
+  std::string in_copy = utf8;  // iconv wants a non-const input pointer
+  char *in = in_copy.data();
+  size_t in_left = in_copy.size();
+  std::string out;
+  out.reserve(utf8.size());
+  char tmp[1024];
+  while (in_left > 0) {
+    size_t step = IconvStep(cd, &in, &in_left, tmp, sizeof(tmp));
+    out.append(tmp, step);
+    if (step == 0 && in_left > 0) {
+      // Defensive: iconv made no progress and did not report an error, so
+      // drop one input byte rather than spin. Matches the guard in
+      // WriteUtf8AsCharsetIconv.
+      in++;
+      in_left--;
+    }
+  }
+  iconv_close(cd);
+  return out;
+#endif
+}
+
+// Decode one UTF-8 sequence starting at `i`. Returns the code point and
+// advances `i` past the sequence, or returns false after advancing `i` by one
+// byte when the sequence is malformed or truncated.
+bool NextUtf8Codepoint(const std::string &utf8, size_t &i, uint32_t &out_cp) {
+  const unsigned char lead = static_cast<unsigned char>(utf8[i]);
+  size_t extra;
+  uint32_t cp;
+  if (lead < 0x80) {
+    out_cp = lead;
+    ++i;
+    return true;
+  } else if ((lead & 0xE0) == 0xC0) {
+    extra = 1;
+    cp = lead & 0x1Fu;
+  } else if ((lead & 0xF0) == 0xE0) {
+    extra = 2;
+    cp = lead & 0x0Fu;
+  } else if ((lead & 0xF8) == 0xF0) {
+    extra = 3;
+    cp = lead & 0x07u;
+  } else {
+    ++i;  // stray continuation byte or 0xF8-0xFF lead
+    return false;
+  }
+  if (i + extra >= utf8.size()) {
+    ++i;
+    return false;  // truncated sequence
+  }
+  bool ok = true;
+  for (size_t k = 1; k <= extra; ++k) {
+    const unsigned char cont = static_cast<unsigned char>(utf8[i + k]);
+    if ((cont & 0xC0) != 0x80) {
+      ok = false;
+      break;
+    }
+    cp = (cp << 6) | (cont & 0x3Fu);
+  }
+  if (!ok) {
+    ++i;
+    return false;
+  }
+  // Reject overlong forms and out-of-range values; a surrogate code point is
+  // allowed through (CESU-style input from a server-side JSON value).
+  if (cp > 0x10FFFF || (extra == 1 && cp < 0x80) ||
+      (extra == 2 && cp < 0x800) || (extra == 3 && cp < 0x10000)) {
+    ++i;
+    return false;
+  }
+  i += extra + 1;
+  out_cp = cp;
+  return true;
+}
+
+}  // namespace
+
+std::string ConvertUtf8ToCharset(const std::string &utf8,
+                                 const std::string &charset) {
+  bool fell_back = false;
+  return ConvertUtf8ToCharsetFull(utf8, toUpperCopy(charset), &fell_back);
+}
+
+CharPayload EncodeCharPayload(const std::string &utf8,
+                              const std::string &charset) {
+  const std::string upper = toUpperCopy(charset);
+  CharPayload payload;
+  bool fell_back = false;
+  payload.bytes = ConvertUtf8ToCharsetFull(utf8, upper, &fell_back);
+  payload.utf8 = fell_back || isUtf8Charset(upper);
+  payload.dbcs = payload.utf8 ? fetch::Dbcs::None : DbcsShapeOf(upper);
+  return payload;
+}
+
+std::vector<std::uint16_t> Utf16FromUtf8(const std::string &utf8) {
+  std::vector<std::uint16_t> units;
+  units.reserve(utf8.size());
+  size_t i = 0;
+  while (i < utf8.size()) {
+    uint32_t cp = 0;
+    if (!NextUtf8Codepoint(utf8, i, cp)) {
+      units.push_back(0xFFFD);  // one replacement char per skipped byte
+      continue;
+    }
+    if (cp <= 0xFFFF) {
+      units.push_back(static_cast<std::uint16_t>(cp));
+    } else {
+      uint32_t v = cp - 0x10000;
+      units.push_back(static_cast<std::uint16_t>(0xD800 + (v >> 10)));
+      units.push_back(static_cast<std::uint16_t>(0xDC00 + (v & 0x3FF)));
+    }
+  }
+  return units;
+}
+
 }  // namespace maxcompute_odbc::encoding

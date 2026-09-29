@@ -13,6 +13,8 @@ test/e2e/
 ├── test_query.py             # 查询执行测试
 ├── test_metadata.py          # 元数据查询测试
 ├── test_data_types.py        # 数据类型测试
+├── test_long_data.py         # 长文本/NULL/空串的分段读取 (pyodbc 视角)
+├── fetch_contract.c          # SQLGetData 分段读取契约的最小 C 消费者
 ├── test_transactions.py      # 事务测试
 ├── test_errors.py            # 错误处理测试
 ├── test_performance.py       # 性能测试
@@ -20,6 +22,34 @@ test/e2e/
 ├── check_odbc_setup.py       # ODBC 环境检查工具
 └── E2E_TEST_README.md        # 本文档
 ```
+
+## SQLGetData 分段读取契约 (fetch_contract.c)
+
+`test/e2e/fetch_contract.c` 是一个不依赖 Python 的最小 ODBC 消费者，直接对着
+Driver Manager 断言 `SQLGetData` 的契约：返回码序列、`StrLen_or_IndPtr` 的递减、
+`01004` 诊断、读完后的 `SQL_NO_DATA`、NULL/空串、`BufferLength=0` 只报长度、
+换列后偏移作废、定长列第二次调用 `SQL_NO_DATA`、以及同一个 statement 句柄
+连续跑两条查询（含 `SQLFreeStmt(SQL_CLOSE)` 之后）。
+
+```bash
+# 1. 构建驱动（见 README），得到 build/lib/libmaxcompute_odbc.so
+# 2. 编译本工具（Linux/macOS 自带 unixODBC 头文件；Windows 需要 ODBC SDK）
+cc -Wall -o /tmp/fetch_contract test/e2e/fetch_contract.c -lodbc
+
+# 3. 用环境变量提供连接信息（与 Python E2E 套件一致），或直接给整串
+export MCO_DRIVER_PATH="$PWD/build/lib/libmaxcompute_odbc.so"
+export MAXCOMPUTE_ENDPOINT="https://service.cn-shanghai.maxcompute.aliyun.com/api"
+export MAXCOMPUTE_PROJECT="<project>"
+export ALIBABA_CLOUD_ACCESS_KEY_ID="<id>"
+export ALIBABA_CLOUD_ACCESS_KEY_SECRET="<secret>"
+# 或者：export MCO_CONNSTR="DRIVER={MaxCompute ODBC Driver};Endpoint=...;..."
+
+# 4. 运行；退出码即失败的断言条数，0 表示全部通过
+/tmp/fetch_contract
+```
+
+查询全部使用 `SELECT ... `（不建表、不需要清理）。
+
 
 ## 前置要求
 

@@ -144,11 +144,13 @@ maxcompute-odbc-driver/
 |       +-- entry_points.cpp          # ODBC function implementations
 |       +-- handles.cpp               # Handle logic (connect, execute, fetch, catalog)
 |       +-- conversions.cpp           # Data type conversion logic
+|       +-- column_fetch.cpp          # SQLGetData segmentation (pure logic)
+|       +-- encoding.cpp              # UTF-8 -> ClientCharset / UTF-16 conversion
 |       +-- odbc_exports.def          # Windows DLL exports (37 functions)
 +-- test/
 |   +-- CMakeLists.txt
 |   +-- test_main.cpp                 # GTest main
-|   +-- unit/                         # 4 unit test files (config, logging, models, setting_parser)
+|   +-- unit/                         # 6 unit test files (config, logging, models, setting_parser, encoding, column_fetch)
 |   +-- e2e/                          # Python pyodbc-based end-to-end tests
 +-- scripts/
 |   +-- build.sh / build.bat          # Platform build scripts
@@ -215,6 +217,11 @@ The `HandleRegistry` is a thread-safe singleton that maps opaque `SQLHANDLE` tok
    - `ProtoDeserializer` decodes MaxCompute Tunnel V6 protobuf wire format
    - CRC32-C checksum validation per-record
 7. `SQLGetData` / bound columns -> `convertAndWrite()` converts `ColumnData` variant to SQL_C_xxx types
+8. `SQLGetData` on a character/binary column builds the whole converted value with
+   `BuildCharacterPayload()` and hands it to `fetch::CopySegment()`, which owns the per-statement
+   read cursor (`StmtHandle::m_getdata_cursor`): a value larger than the application buffer is
+   returned in parts with `SQL_SUCCESS_WITH_INFO` + `01004`, and `SQL_NO_DATA` once delivered.
+   `test/unit/column_fetch_test.cpp` covers that contract without a connection.
 
 ## Dependencies (vcpkg.json)
 

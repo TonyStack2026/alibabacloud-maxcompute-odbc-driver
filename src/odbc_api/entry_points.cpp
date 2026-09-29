@@ -1169,16 +1169,28 @@ SQLRETURN SQL_API SQLFreeStmt(SQLHSTMT StatementHandle, SQLUSMALLINT Option) {
     return SQL_INVALID_HANDLE;
   }
 
-  // Note: Option parameter (SQL_CLOSE, SQL_DROP, SQL_UNBIND, SQL_RESET_PARAMS)
-  // is used to control what to do with the statement
+  // Option is one of SQL_CLOSE, SQL_DROP, SQL_UNBIND, SQL_RESET_PARAMS.
   try {
     if (Option == SQL_DROP) {
       // SQL_DROP: Free the statement handle
       maxcompute_odbc::HandleRegistry::instance().free(StatementHandle);
+      return SQL_SUCCESS;
     }
-    // Other options (SQL_CLOSE, SQL_UNBIND, SQL_RESET_PARAMS) are ignored
-    // as we don't maintain cursor state or bound parameters in this simple
-    // implementation
+
+    auto *stmt = maxcompute_odbc::HandleRegistry::instance()
+                     .get<maxcompute_odbc::StmtHandle>(StatementHandle);
+    if (!stmt) return SQL_INVALID_HANDLE;
+
+    if (Option == SQL_CLOSE) {
+      // Discard the current result set. Without this a reused handle kept the
+      // previous query's stream, its last row and its SQLGetData read offset,
+      // so the next SQLExecute/SQLExecDirect answered from stale state.
+      stmt->resetResultState();
+    } else if (Option == SQL_UNBIND) {
+      stmt->clearBindings();
+    }
+    // SQL_RESET_PARAMS is a no-op: bound parameters are not supported yet, so
+    // there is nothing to reset.
     return SQL_SUCCESS;
   } catch (...) {
     return SQL_ERROR;

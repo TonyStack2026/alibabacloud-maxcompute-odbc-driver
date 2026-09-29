@@ -135,7 +135,7 @@ SQLRETURN StmtHandle::execute() {
     return SQL_ERROR;
   }
 
-  m_result_stream = std::move(result.value());
+  setResultStream(std::move(result.value()));
   MCO_LOG_DEBUG("Query submitted, stream handle obtained.");
   return SQL_SUCCESS;
 }
@@ -151,8 +151,8 @@ SQLRETURN StmtHandle::executeDirect(const std::string &sql) {
   // Handle empty query - return success with no result set
   if (sql.empty() || sql.find_first_not_of(" \t\r\n") == std::string::npos) {
     MCO_LOG_DEBUG("Empty query received, returning success with no results");
-    // Reset result stream to indicate no results
-    m_result_stream.reset();
+    // No result set: drop the previous one together with its row state.
+    resetResultState();
     return SQL_SUCCESS;
   }
 
@@ -166,7 +166,7 @@ SQLRETURN StmtHandle::executeDirect(const std::string &sql) {
     return SQL_ERROR;
   }
 
-  m_result_stream = std::move(result.value());
+  setResultStream(std::move(result.value()));
   MCO_LOG_DEBUG("Query submitted, stream handle obtained.");
   return SQL_SUCCESS;
 }
@@ -202,7 +202,10 @@ SQLRETURN StmtHandle::describeCol(SQLUSMALLINT col_num, SQLCHAR *col_name_buf,
 
   auto result = m_result_stream->getSchema();
   if (!result.has_value()) {
+    // Without a return here the code below reads value() off an empty result
+    // and the application gets a crash instead of an error.
     addDiagRecord({0, "00000", result.error().message});
+    return SQL_ERROR;
   }
   auto &schema = result.value();
   if (col_num == 0 || col_num > schema->getColumnCount()) {
@@ -254,7 +257,10 @@ SQLRETURN StmtHandle::bindCol(SQLUSMALLINT col_num, SQLSMALLINT target_type,
     // 将向量大小调整为列数，所有未绑定的列将保持默认构造状态
     auto result = m_result_stream->getSchema();
     if (!result.has_value()) {
+      // Same guard as elsewhere: reading value() off a failed result is a
+      // crash, not a fallback.
       addDiagRecord({0, "00000", result.error().message});
+      return SQL_ERROR;
     }
     auto &schema = result.value();
     m_bindings.resize(schema->getColumnCount());
@@ -281,6 +287,10 @@ SQLRETURN StmtHandle::fetch() {
   if (m_end_of_stream) {
     return SQL_NO_DATA;
   }
+
+  // 新的一行: 上一行留下的 SQLGetData 读取位置和已编码的值都要作废.
+  m_getdata_cursor.reset();
+  m_segment_payload = SegmentPayload{};
 
   // 获取下一行数据
   auto result = m_result_stream->fetchNextRow();
@@ -312,6 +322,15 @@ SQLRETURN StmtHandle::fetch() {
                     : std::string("UTF-8");
 
   // 遍历所有列，对已绑定的列进行数据转换
+  //
+  // A bound character or binary value that does not fit the application's
+  // buffer is not an error: SQLFetch answers SQL_SUCCESS_WITH_INFO with
+  // SQLSTATE 01004 and leaves the truncated value in place (22001 is reserved
+  // for truncated variable-length bookmarks). The row still has to be handed
+  // over, so a too-small buffer costs the application the tail of that one
+  // column instead of the whole row. Only a conversion that actually fails
+  // (SQL_ERROR) aborts.
+  SQLRETURN overall_ret = SQL_SUCCESS;
   for (size_t i = 0; i < m_current_row->values.size(); ++i) {
     const auto &binding = m_bindings[i];
     if (binding.target_buffer == nullptr) {
@@ -320,16 +339,20 @@ SQLRETURN StmtHandle::fetch() {
 
     const auto &column_data = m_current_row->values[i];
     SQLRETURN conv_ret = convertAndWrite(column_data, binding, client_charset);
-    if (conv_ret != SQL_SUCCESS) {
-      // 在 convertAndWrite 中应添加诊断记录
+    if (conv_ret == SQL_ERROR) {
+      // 转换本身失败: 这一行的数据不可信, 直接报错.
       return SQL_ERROR;
+    }
+    if (conv_ret == SQL_SUCCESS_WITH_INFO) {
+      addDiagRecord({0, "01004", "String data, right truncated."});
+      overall_ret = SQL_SUCCESS_WITH_INFO;
     }
   }
 
   // 增加已获取行数计数
   m_fetched_rows++;
 
-  return SQL_SUCCESS;
+  return overall_ret;
 }
 
 SQLRETURN StmtHandle::getRowCount(SQLLEN *row_count) {
@@ -358,6 +381,7 @@ SQLRETURN StmtHandle::getColAttribute(SQLUSMALLINT column_number,
   auto result = m_result_stream->getSchema();
   if (!result.has_value()) {
     addDiagRecord({0, "00000", result.error().message});
+    return SQL_ERROR;
   }
   auto &schema = result.value();
   if (column_number == 0 || column_number > schema->getColumnCount()) {
@@ -711,6 +735,10 @@ SQLRETURN StmtHandle::getColAttribute(SQLUSMALLINT column_number,
 SQLRETURN StmtHandle::getData(SQLUSMALLINT col_num, SQLSMALLINT target_type,
                               SQLPOINTER target_buf, SQLLEN buf_len,
                               SQLLEN *indicator) {
+  // 每次调用先清空句柄上的诊断, 否则 SQLGetDiagRec(1) 会一直返回这个句柄产生
+  // 的第一条记录, 应用读到的 01004 可能是上一行的.
+  clearDiagRecords();
+
   if (!m_result_stream) {
     addDiagRecord({0, "HY010", "Function sequence error"});
     return SQL_ERROR;
@@ -724,6 +752,7 @@ SQLRETURN StmtHandle::getData(SQLUSMALLINT col_num, SQLSMALLINT target_type,
   auto result = m_result_stream->getSchema();
   if (!result.has_value()) {
     addDiagRecord({0, "00000", result.error().message});
+    return SQL_ERROR;
   }
   auto &schema = result.value();
   if (col_num == 0 || col_num > schema->getColumnCount()) {
@@ -741,19 +770,73 @@ SQLRETURN StmtHandle::getData(SQLUSMALLINT col_num, SQLSMALLINT target_type,
   // ODBC列号从1开始，我们的vector索引从0开始
   const auto &column_data = m_current_row->values[col_num - 1];
 
-  // 创建一个 ColumnBinding 临时结构来利用 convertAndWrite 函数
-  ColumnBinding binding{target_type, target_buf, buf_len, indicator};
+  // 上一个调用已经把这个列的值全部交出去了: 按规范返回 SQL_NO_DATA, 长度清零.
+  if (m_getdata_cursor.column == col_num && m_getdata_cursor.exhausted) {
+    if (indicator) *indicator = 0;
+    return SQL_NO_DATA;
+  }
 
-  // 使用现有的数据转换功能
+  // NULL: 长度/指示器写 SQL_NULL_DATA, 不消费任何数据, 所以重复调用还是报 NULL.
+  if (std::holds_alternative<std::monostate>(column_data)) {
+    if (!indicator) {
+      addDiagRecord(
+          {0, "22002", "Indicator variable required but not supplied"});
+      return SQL_ERROR;
+    }
+    *indicator = SQL_NULL_DATA;
+    return SQL_SUCCESS;
+  }
+
   const std::string client_charset =
       m_parent_conn ? m_parent_conn->getConfigForUpdate().clientCharset
                     : std::string("UTF-8");
-  SQLRETURN conv_ret = convertAndWrite(column_data, binding, client_charset);
-  if (conv_ret != SQL_SUCCESS) {
-    return SQL_ERROR;
+
+  // 变长字符/二进制列: 值只编码一次, 之后每个分段都从缓存的负载里切.
+  SegmentPayload &cached = m_segment_payload;
+  if (!cached.valid || cached.column != col_num ||
+      cached.target_type != target_type || cached.charset != client_charset) {
+    if (!BuildCharacterPayload(column_data, target_type, client_charset,
+                               cached.bytes, cached.layout)
+             .has_value()) {
+      cached = SegmentPayload{};
+      cached.valid = false;
+    } else {
+      cached.valid = true;
+      cached.column = col_num;
+      cached.target_type = target_type;
+      cached.charset = client_charset;
+    }
   }
 
-  return SQL_SUCCESS;
+  if (cached.valid) {
+    // 变长字符/二进制列: 允许分段读. CopySegment 负责游标推进、终止符、
+    // StrLen_or_Ind (本次调用开始时还剩多少字节) 和返回码.
+    const auto segment =
+        fetch::CopySegment(cached.bytes, cached.layout, m_getdata_cursor,
+                           col_num, target_buf, buf_len);
+    if (segment.indicator_valid && indicator) {
+      *indicator = segment.indicator;
+    }
+    if (segment.truncated) {
+      addDiagRecord({0, "01004", "String data, right truncated."});
+    }
+    return segment.ret;
+  }
+
+  // 定长目标 (数值、日期时间、GUID...) 不能分段返回, 继续走 convertAndWrite.
+  ColumnBinding binding{target_type, target_buf, buf_len, indicator};
+  const SQLRETURN conv_ret =
+      convertAndWrite(column_data, binding, client_charset);
+  if (conv_ret == SQL_SUCCESS || conv_ret == SQL_SUCCESS_WITH_INFO) {
+    // 定长值一次给完: 记下这个列已经读完, 之后的调用返回 SQL_NO_DATA.
+    m_getdata_cursor.column = col_num;
+    m_getdata_cursor.offset = 0;
+    m_getdata_cursor.exhausted = true;
+  }
+  if (conv_ret == SQL_SUCCESS_WITH_INFO) {
+    addDiagRecord({0, "01004", "String data, right truncated."});
+  }
+  return conv_ret;
 }
 
 // Implementation of helper functions in StmtHandle.cpp
@@ -905,7 +988,7 @@ SQLRETURN StmtHandle::tables(const std::string &catalog,
         .addColumn("TABLE_NAME", PrimitiveTypeInfo(OdpsType::STRING))
         .addColumn("TABLE_TYPE", PrimitiveTypeInfo(OdpsType::STRING))
         .addColumn("REMARKS", PrimitiveTypeInfo(OdpsType::STRING));
-    m_result_stream = std::move(emptyBuilder->build());
+    setResultStream(std::move(emptyBuilder->build()));
     return SQL_SUCCESS;
   }
 
@@ -916,7 +999,7 @@ SQLRETURN StmtHandle::tables(const std::string &catalog,
     auto builder = std::make_unique<StaticResultSetBuilder>();
     builder->addColumn("TABLE_CAT", PrimitiveTypeInfo(OdpsType::STRING));
     builder->addRowValues(projectName);
-    m_result_stream = std::move(builder->build());
+    setResultStream(std::move(builder->build()));
     return SQL_SUCCESS;
   }
 
@@ -984,7 +1067,7 @@ SQLRETURN StmtHandle::tables(const std::string &catalog,
       }
     }
 
-    m_result_stream = std::move(builder->build());
+    setResultStream(std::move(builder->build()));
     return SQL_SUCCESS;
 
   } catch (const std::exception &e) {
@@ -1028,7 +1111,7 @@ SQLRETURN StmtHandle::columns(const std::string &catalog,
                        stream_result.error().message});
         return SQL_ERROR;
       }
-      m_result_stream = std::move(stream_result.value());
+      setResultStream(std::move(stream_result.value()));
       return SQL_SUCCESS;
     }
 
@@ -1067,7 +1150,7 @@ SQLRETURN StmtHandle::columns(const std::string &catalog,
                     stream_result.error().message);
       return SQL_ERROR;
     }
-    m_result_stream = std::move(stream_result.value());
+    setResultStream(std::move(stream_result.value()));
     return SQL_SUCCESS;
   } catch (const std::exception &e) {
     addDiagRecord({0, "HY000", e.what()});

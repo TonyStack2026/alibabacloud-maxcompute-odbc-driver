@@ -1,7 +1,10 @@
 #pragma once
 
+#include "maxcompute_odbc/odbc_api/column_fetch.h"
 #include <cstddef>
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace maxcompute_odbc::encoding {
 
@@ -37,5 +40,46 @@ namespace maxcompute_odbc::encoding {
  */
 size_t WriteUtf8AsCharset(const std::string &utf8, const std::string &charset,
                           char *buffer, size_t buffer_size);
+
+/**
+ * Convert a UTF-8 string into a target charset without truncating anything.
+ *
+ * The non-truncating sibling of WriteUtf8AsCharset: it returns the whole
+ * converted byte string so that callers can slice it themselves. Charset
+ * recognition, case handling and the "unknown charset falls back to UTF-8"
+ * rule are the same as in WriteUtf8AsCharset.
+ */
+std::string ConvertUtf8ToCharset(const std::string &utf8,
+                                 const std::string &charset);
+
+/**
+ * Decode a UTF-8 string into native-endian UTF-16 code units (SQLWCHAR).
+ *
+ * - Code points above the BMP become surrogate pairs.
+ * - A malformed or truncated byte sequence becomes one U+FFFD per skipped
+ *   byte, so input bytes never disappear without leaving a character.
+ * - No length limit is imposed; truncation is the caller's job.
+ */
+std::vector<std::uint16_t> Utf16FromUtf8(const std::string &utf8);
+
+/**
+ * Encode a value for a SQL_C_CHAR buffer and report how to cut it safely.
+ *
+ * `bytes` holds the converted value with no terminator. `utf8` says the output
+ * really is UTF-8 (the empty charset, UTF-8/UTF8, or a charset that fell back
+ * to UTF-8 because the platform could not convert it), which lets the caller
+ * keep segments on UTF-8 codepoint boundaries. `dbcs` names the two-byte
+ * model when the output uses one, and is Dbcs::None for single-byte output and
+ * for multi-byte models the segmenter cannot walk (GB18030, and charsets only
+ * iconv or a Windows code page recognises): there a cut may land inside a
+ * character and only byte-exact reassembly is promised.
+ */
+struct CharPayload {
+  std::string bytes;
+  bool utf8 = true;
+  fetch::Dbcs dbcs = fetch::Dbcs::None;
+};
+CharPayload EncodeCharPayload(const std::string &utf8,
+                              const std::string &charset);
 
 }  // namespace maxcompute_odbc::encoding

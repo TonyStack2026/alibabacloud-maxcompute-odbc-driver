@@ -1,6 +1,7 @@
 #pragma once
 #include "maxcompute_odbc/config/config.h"
 #include "maxcompute_odbc/maxcompute_client/client.h"
+#include "maxcompute_odbc/odbc_api/column_fetch.h"
 #include "maxcompute_odbc/platform.h"  // Must include before sql.h on Windows
 #include <memory>
 #include <sql.h>
@@ -27,6 +28,10 @@ class OdbcHandle {
   void addDiagRecord(const DiagRecord &record) {
     m_diag_records.push_back(record);
   }
+  // Every ODBC function call starts by clearing the diagnostics of its handle,
+  // otherwise SQLGetDiagRec(1) keeps reporting the first record the handle
+  // ever produced.
+  void clearDiagRecords() { m_diag_records.clear(); }
   const std::vector<DiagRecord> &getDiagRecords() const {
     return m_diag_records;
   }
@@ -143,6 +148,47 @@ class StmtHandle : public OdbcHandle {
     return reinterpret_cast<SQLHDESC>(this);
   }  // Default implementation
 
+  // Install a new result set and drop everything the driver remembers about
+  // the previous one: the current row, the end-of-stream flag, the row counter
+  // and the SQLGetData read position.
+  //
+  // Without this a reused statement handle keeps the state of the query it ran
+  // before: SQLExecDirect of a second query left m_end_of_stream set from the
+  // first, so SQLFetch answered SQL_NO_DATA and the rows of the new result were
+  // never readable, while SQLGetData could still hand out the previous row
+  // under the new schema. Column bindings are deliberately kept, because the
+  // ODBC spec holds them until SQLFreeStmt(SQL_UNBIND) or the handle goes away.
+  void setResultStream(std::unique_ptr<ResultStream> stream) {
+    m_result_stream = std::move(stream);
+    m_current_row.reset();
+    m_end_of_stream = false;
+    m_fetched_rows = 0;
+    m_getdata_cursor.reset();
+    m_segment_payload = SegmentPayload{};
+  }
+
+  // Same cleanup without a replacement stream (an empty statement, or
+  // SQLFreeStmt(SQL_CLOSE)).
+  void resetResultState() { setResultStream(nullptr); }
+
+  // The value the current SQLGetData segment stream is serving, encoded once
+  // instead of once per call: a 1 MB STRING read through a 16-byte buffer is
+  // ~66k calls, and re-encoding the value on each of them would make the read
+  // quadratic in the value size. Keyed by (column, C type, client charset) and
+  // dropped whenever the read cursor is reset, so it can never outlive the row
+  // it belongs to.
+  struct SegmentPayload {
+    SQLUSMALLINT column = 0;
+    SQLSMALLINT target_type = 0;
+    std::string charset;
+    bool valid = false;
+    std::vector<std::uint8_t> bytes;
+    fetch::Layout layout;
+  };
+
+  // SQLFreeStmt(SQL_UNBIND).
+  void clearBindings() { m_bindings.clear(); }
+
   struct ColumnBinding {
     SQLSMALLINT target_type;
     SQLPOINTER target_buffer;
@@ -170,6 +216,11 @@ class StmtHandle : public OdbcHandle {
   SQLLEN m_fetched_rows = 0;  // 记录已获取的行数
 
   std::vector<ColumnBinding> m_bindings;
+  // Where SQLGetData is inside the current value of the column it was last
+  // called for. One cursor, because asking for another column invalidates the
+  // previous offset.
+  fetch::Cursor m_getdata_cursor;
+  SegmentPayload m_segment_payload;
 };
 
 }  // namespace maxcompute_odbc

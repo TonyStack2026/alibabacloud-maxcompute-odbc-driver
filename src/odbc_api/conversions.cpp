@@ -91,6 +91,98 @@ SQL_TIMESTAMP_STRUCT to_sql_timestamp(const McTimestamp &mc_ts) {
 #endif
 }
 
+namespace {
+
+// 把任意列值转成字符目标 (SQL_C_CHAR / SQL_C_WCHAR) 应该看到的文本.
+// convertAndWrite 的绑定写入和 SQLGetData 的分段读取都用这一个实现, 否则同一个
+// 值会因为应用调用的是 SQLFetch 还是 SQLGetData 而呈现不同的文本.
+template <class T>
+std::string ValueToText(const T &arg) {
+  if constexpr (std::is_same_v<T, std::string>) {
+    return arg;
+  } else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, int> ||
+                       std::is_same_v<T, signed short int> ||
+                       std::is_same_v<T, double> || std::is_same_v<T, bool>) {
+    return std::to_string(arg);
+  } else if constexpr (std::is_same_v<T, McDate>) {
+    // Format YYYY-MM-DD
+#ifndef _WIN32
+    const auto odbc_date = to_sql_date(arg);
+    return date::format("%Y-%m-%d", date::year(odbc_date.year) /
+                                        odbc_date.month / odbc_date.day);
+#else
+    const auto d = to_sql_date(arg);
+    std::ostringstream ss;
+    ss << std::setw(4) << std::setfill('0') << d.year << "-" << std::setw(2)
+       << std::setfill('0') << d.month << "-" << std::setw(2)
+       << std::setfill('0') << d.day;
+    return ss.str();
+#endif
+  } else if constexpr (std::is_same_v<T, McTimestamp>) {
+#ifndef _WIN32
+    const auto duration_ns = std::chrono::seconds(arg.epochSeconds) +
+                             std::chrono::nanoseconds(arg.nanoseconds);
+    const date::sys_time<std::chrono::nanoseconds> utc_tp{duration_ns};
+    auto sec_tp = date::floor<std::chrono::seconds>(utc_tp);
+    auto subseconds =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(utc_tp - sec_tp)
+            .count();
+    std::string text = date::format("%Y-%m-%d %H:%M:%S", sec_tp);
+    if (subseconds > 0) {
+      char buf[32];
+      int len = snprintf(buf, sizeof(buf), ".%09lld",
+                         static_cast<long long>(subseconds));
+      int trim = 0;
+      for (int i = len - 1; i >= 0; --i) {
+        if (buf[i] == '0')
+          ++trim;
+        else
+          break;
+      }
+      if (trim > 0) buf[len - trim] = '\0';
+      text += buf;
+    }
+    return text;
+#else
+    // Format UTC timestamp
+    auto sec = static_cast<time_t>(arg.epochSeconds);
+    tm t;
+#if defined(_MSC_VER)
+    gmtime_s(&t, &sec);
+#else
+    gmtime_r(&sec, &t);
+#endif
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
+                     t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour,
+                     t.tm_min, t.tm_sec);
+    if (arg.nanoseconds > 0) {
+      int len = snprintf(buf + n, sizeof(buf) - n, ".%09lld",
+                         static_cast<long long>(arg.nanoseconds));
+      // trim trailing zeros
+      int trim = 0;
+      for (int i = n + len - 1; i >= n; --i) {
+        if (buf[i] == '0')
+          ++trim;
+        else
+          break;
+      }
+      if (trim > 0) buf[n + len - trim] = '\0';
+    }
+    return std::string(buf);
+#endif
+  } else {
+    // ARRAY / MAP / STRUCT 目前没有文本表示, 保持原有的占位串.
+    return "<unsupported_type_to_string>";
+  }
+}
+
+}  // namespace
+
+std::string ColumnDataToText(const ColumnData &data) {
+  return std::visit([](const auto &arg) { return ValueToText(arg); }, data);
+}
+
 SQLRETURN convertAndWrite(const ColumnData &data,
                           const StmtHandle::ColumnBinding &binding,
                           const std::string &client_charset) {
@@ -115,88 +207,7 @@ SQLRETURN convertAndWrite(const ColumnData &data,
           // --- 文本类型 ---
           case SQL_C_CHAR:  // SQL_CHAR, SQL_VARCHAR, SQL_LONGVARCHAR
           {
-            std::string str_val;
-            // 将各种源类型转换为字符串
-            if constexpr (std::is_same_v<T, std::string>) {
-              str_val = arg;
-            } else if constexpr (std::is_same_v<T, int64_t> ||
-                                 std::is_same_v<T, double> ||
-                                 std::is_same_v<T, bool>) {
-              str_val = std::to_string(arg);
-            } else if constexpr (std::is_same_v<T, McDate>) {
-          // Format YYYY-MM-DD
-#ifndef _WIN32
-              const auto odbc_date = to_sql_date(arg);
-              str_val =
-                  date::format("%Y-%m-%d", date::year(odbc_date.year) /
-                                               odbc_date.month / odbc_date.day);
-#else
-              const auto d = to_sql_date(arg);
-              std::ostringstream ss;
-              ss << std::setw(4) << std::setfill('0') << d.year << "-"
-                 << std::setw(2) << std::setfill('0') << d.month << "-"
-                 << std::setw(2) << std::setfill('0') << d.day;
-              str_val = ss.str();
-#endif
-            } else if constexpr (std::is_same_v<T, McTimestamp>) {
-#ifndef _WIN32
-              const auto duration_ns =
-                  std::chrono::seconds(arg.epochSeconds) +
-                  std::chrono::nanoseconds(arg.nanoseconds);
-              const date::sys_time<std::chrono::nanoseconds> utc_tp{
-                  duration_ns};
-              auto sec_tp = date::floor<std::chrono::seconds>(utc_tp);
-              auto subseconds =
-                  std::chrono::duration_cast<std::chrono::nanoseconds>(utc_tp -
-                                                                       sec_tp)
-                      .count();
-              str_val = date::format("%Y-%m-%d %H:%M:%S", sec_tp);
-              if (subseconds > 0) {
-                char buf[32];
-                int len = snprintf(buf, sizeof(buf), ".%09lld",
-                                   static_cast<long long>(subseconds));
-                int trim = 0;
-                for (int i = len - 1; i >= 0; --i) {
-                  if (buf[i] == '0')
-                    ++trim;
-                  else
-                    break;
-                }
-                if (trim > 0) buf[len - trim] = '\0';
-                str_val += buf;
-              }
-#else
-              // Format UTC timestamp
-              auto sec = static_cast<time_t>(arg.epochSeconds);
-              tm t;
-#if defined(_MSC_VER)
-              gmtime_s(&t, &sec);
-#else
-              gmtime_r(&sec, &t);
-#endif
-              char buf[64];
-              int n =
-                  snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
-                           t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour,
-                           t.tm_min, t.tm_sec);
-              if (arg.nanoseconds > 0) {
-                int len = snprintf(buf + n, sizeof(buf) - n, ".%09lld",
-                                   static_cast<long long>(arg.nanoseconds));
-                // trim trailing zeros
-                int trim = 0;
-                for (int i = n + len - 1; i >= n; --i) {
-                  if (buf[i] == '0')
-                    ++trim;
-                  else
-                    break;
-                }
-                if (trim > 0) buf[n + len - trim] = '\0';
-              }
-              str_val = buf;
-#endif
-            } else {
-              str_val = "<unsupported_type_to_string>";
-            }
+            const std::string str_val = ColumnDataToText(data);
 
             // 通过 encoding helper 完成 UTF-8 -> 目标 charset 转换、
             // 字符边界截断与 NUL 终止. 返回值是转换后的总字节长度,
@@ -539,160 +550,34 @@ SQLRETURN convertAndWrite(const ColumnData &data,
           }
 
           // --- Wide character type (SQL_C_WCHAR = -8) ---
-          // pyodbc on Unix requests data as SQL_C_WCHAR (UTF-16)
-          case SQL_C_WCHAR:  // -8
+          case SQL_C_WCHAR:  // SQL_WCHAR, SQL_WVARCHAR, SQL_WLONGVARCHAR
           {
-            std::string str_val;
-            // Convert various source types to string (same as SQL_C_CHAR)
-            if constexpr (std::is_same_v<T, std::string>) {
-              str_val = arg;
-            } else if constexpr (std::is_same_v<T, int64_t>) {
-              str_val = std::to_string(arg);
-            } else if constexpr (std::is_same_v<T, int>) {
-              str_val = std::to_string(arg);
-            } else if constexpr (std::is_same_v<T, signed short int>) {
-              str_val = std::to_string(arg);
-            } else if constexpr (std::is_same_v<T, double>) {
-              str_val = std::to_string(arg);
-            } else if constexpr (std::is_same_v<T, bool>) {
-              str_val = arg ? "1" : "0";
-            } else if constexpr (std::is_same_v<T, McDate>) {
-#ifndef _WIN32
-              const auto odbc_date = to_sql_date(arg);
-              str_val =
-                  date::format("%Y-%m-%d", date::year(odbc_date.year) /
-                                               odbc_date.month / odbc_date.day);
-#else
-              const auto d = to_sql_date(arg);
-              std::ostringstream ss;
-              ss << std::setw(4) << std::setfill('0') << d.year << "-"
-                 << std::setw(2) << std::setfill('0') << d.month << "-"
-                 << std::setw(2) << std::setfill('0') << d.day;
-              str_val = ss.str();
-#endif
-            } else if constexpr (std::is_same_v<T, McTimestamp>) {
-#ifndef _WIN32
-              const auto duration_ns =
-                  std::chrono::seconds(arg.epochSeconds) +
-                  std::chrono::nanoseconds(arg.nanoseconds);
-              const date::sys_time<std::chrono::nanoseconds> utc_tp{
-                  duration_ns};
-              auto sec_tp = date::floor<std::chrono::seconds>(utc_tp);
-              auto subseconds =
-                  std::chrono::duration_cast<std::chrono::nanoseconds>(utc_tp -
-                                                                       sec_tp)
-                      .count();
-              str_val = date::format("%Y-%m-%d %H:%M:%S", sec_tp);
-              if (subseconds > 0) {
-                char buf[32];
-                int len = snprintf(buf, sizeof(buf), ".%09lld",
-                                   static_cast<long long>(subseconds));
-                int trim = 0;
-                for (int i = len - 1; i >= 0; --i) {
-                  if (buf[i] == '0')
-                    ++trim;
-                  else
-                    break;
-                }
-                if (trim > 0) buf[len - trim] = '\0';
-                str_val += buf;
-              }
-#else
-              auto sec = static_cast<time_t>(arg.epochSeconds);
-              tm t;
-#if defined(_MSC_VER)
-              gmtime_s(&t, &sec);
-#else
-              gmtime_r(&sec, &t);
-#endif
-              char buf[64];
-              int n =
-                  snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
-                           t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour,
-                           t.tm_min, t.tm_sec);
-              if (arg.nanoseconds > 0) {
-                int len = snprintf(buf + n, sizeof(buf) - n, ".%09lld",
-                                   static_cast<long long>(arg.nanoseconds));
-                int trim = 0;
-                for (int i = n + len - 1; i >= n; --i) {
-                  if (buf[i] == '0')
-                    ++trim;
-                  else
-                    break;
-                }
-                if (trim > 0) buf[n + len - trim] = '\0';
-              }
-              str_val = buf;
-#endif
-            } else {
-              str_val = "<unsupported_type>";
+            // BufferLength is in bytes and reserves one UTF-16 unit for the
+            // terminator. Going through fetch::CopySegment gives this path the
+            // same truncation and StrLen_or_Ind semantics as SQL_C_CHAR: the
+            // indicator carries the converted length, and a buffer that is too
+            // small reports SQL_SUCCESS_WITH_INFO instead of silently dropping
+            // the tail.
+            //
+            // The old inline loop counted writable units as
+            // buffer_length / sizeof(SQLWCHAR) - 1, which underflows to a huge
+            // count when BufferLength is 0 or 1 and then writes past the
+            // caller's buffer.
+            std::vector<std::uint8_t> payload;
+            fetch::Layout layout;
+            if (!BuildCharacterPayload(data, SQL_C_WCHAR, client_charset,
+                                       payload, layout)
+                     .has_value()) {
+              return SQL_ERROR;
             }
-
-            // Convert UTF-8 string to UTF-16 (SQLWCHAR)
-            // Buffer length is in bytes, calculate max UTF-16 chars
-            size_t max_chars =
-                static_cast<size_t>(binding.buffer_length) / sizeof(SQLWCHAR) -
-                1;  // Leave space for null terminator
-
-            // UTF-8 to UTF-16 conversion
-            size_t out_pos = 0;
-            uint16_t *dest =
-                reinterpret_cast<uint16_t *>(binding.target_buffer);
-            const char *src = str_val.c_str();
-            size_t src_len = str_val.length();
-
-            for (size_t i = 0; i < src_len && out_pos < max_chars; ++i) {
-              unsigned char c = static_cast<unsigned char>(src[i]);
-              uint32_t codepoint;
-
-              if (c < 0x80) {
-                codepoint = c;
-              } else if ((c & 0xE0) == 0xC0) {
-                if (i + 1 >= src_len) break;
-                codepoint = ((c & 0x1F) << 6) |
-                            (static_cast<unsigned char>(src[i + 1]) & 0x3F);
-                i += 1;
-              } else if ((c & 0xF0) == 0xE0) {
-                if (i + 2 >= src_len) break;
-                codepoint =
-                    ((c & 0x0F) << 12) |
-                    ((static_cast<unsigned char>(src[i + 1]) & 0x3F) << 6) |
-                    (static_cast<unsigned char>(src[i + 2]) & 0x3F);
-                i += 2;
-              } else if ((c & 0xF8) == 0xF0) {
-                if (i + 3 >= src_len || out_pos + 1 >= max_chars) break;
-                codepoint =
-                    ((c & 0x07) << 18) |
-                    ((static_cast<unsigned char>(src[i + 1]) & 0x3F) << 12) |
-                    ((static_cast<unsigned char>(src[i + 2]) & 0x3F) << 6) |
-                    (static_cast<unsigned char>(src[i + 3]) & 0x3F);
-                i += 3;
-                // Encode as surrogate pair
-                codepoint -= 0x10000;
-                dest[out_pos++] =
-                    static_cast<uint16_t>(0xD800 | (codepoint >> 10));
-                dest[out_pos++] =
-                    static_cast<uint16_t>(0xDC00 | (codepoint & 0x3FF));
-                continue;
-              } else {
-                continue;
-              }
-              dest[out_pos++] = static_cast<uint16_t>(codepoint);
+            fetch::Cursor cursor;  // a bound write always starts at the top
+            const auto segment = fetch::CopySegment(payload, layout, cursor, 1,
+                                                    binding.target_buffer,
+                                                    binding.buffer_length);
+            if (segment.indicator_valid && binding.indicator_ptr) {
+              *binding.indicator_ptr = segment.indicator;
             }
-
-            // Null terminate
-            dest[out_pos] = 0;
-
-            if (binding.indicator_ptr) {
-              *binding.indicator_ptr =
-                  static_cast<SQLLEN>(out_pos * sizeof(SQLWCHAR));
-            }
-
-            MCO_LOG_DEBUG("SQL_C_WCHAR: converted {} bytes to {} UTF-16 chars",
-                          str_val.length(), out_pos);
-            // Always return SQL_SUCCESS since we successfully converted the
-            // data
-            return SQL_SUCCESS;
+            return segment.ret;
           }
 
           default:
@@ -701,6 +586,59 @@ SQLRETURN convertAndWrite(const ColumnData &data,
         }
       },
       data);
+}
+
+Result<void> BuildCharacterPayload(const ColumnData &data,
+                                   SQLSMALLINT target_type,
+                                   const std::string &client_charset,
+                                   std::vector<std::uint8_t> &payload,
+                                   fetch::Layout &layout) {
+  payload.clear();
+  layout = fetch::Layout{};
+
+  switch (target_type) {
+    case SQL_C_CHAR: {
+      const encoding::CharPayload encoded =
+          encoding::EncodeCharPayload(ColumnDataToText(data), client_charset);
+      payload.assign(encoded.bytes.begin(), encoded.bytes.end());
+      layout.element_bytes = 1;
+      layout.nul_terminate = true;
+      layout.utf8_boundary = encoded.utf8;
+      layout.dbcs = encoded.dbcs;
+      return Result<void>{};
+    }
+    case SQL_C_WCHAR: {
+      const std::vector<std::uint16_t> units =
+          encoding::Utf16FromUtf8(ColumnDataToText(data));
+      payload.resize(units.size() * sizeof(SQLWCHAR));
+      if (!units.empty()) {
+        std::memcpy(payload.data(), units.data(), payload.size());
+      }
+      layout.element_bytes = static_cast<std::uint8_t>(sizeof(SQLWCHAR));
+      layout.nul_terminate = true;
+      layout.utf16_boundary = true;
+      return Result<void>{};
+    }
+    case SQL_C_BINARY: {
+      // MaxCompute BINARY: the server bytes arrive unchanged in a
+      // std::string and the column is described as SQL_VARCHAR, so a binary
+      // target has to hand them over as they are: no charset conversion, no
+      // terminator and no character-boundary rule. Converting the bytes to
+      // UTF-8 text first would corrupt any value that is not valid UTF-8.
+      const auto *raw = std::get_if<std::string>(&data);
+      if (raw == nullptr) {
+        return makeError<void>(ErrorCode::InvalidParameter,
+                               "column value is not binary data");
+      }
+      payload.assign(raw->begin(), raw->end());
+      layout.element_bytes = 1;
+      layout.nul_terminate = false;
+      return Result<void>{};
+    }
+    default:
+      return makeError<void>(ErrorCode::InvalidParameter,
+                             "not a character or binary target type");
+  }
 }
 
 Result<std::unique_ptr<OdbcColumn>> convertColumn(const Column &column) {
