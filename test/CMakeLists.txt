@@ -89,26 +89,22 @@ add_test(NAME statement_fetch_test COMMAND statement_fetch_test)
 
 # Suites that a testing build must produce. Removing or renaming one is a
 # conscious change and belongs in the matching PR, not in a skipped test run.
-set(MCO_EXPECTED_UNIT_TESTS
-    config_test
-    logging_test
-    models_test
-    setting_parser_test
-    encoding_test
-    column_fetch_test
-    statement_fetch_test
-)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/McoExpectedUnitTests.cmake)
+get_property(mco_registered_unit_tests DIRECTORY PROPERTY TESTS)
 foreach(mco_expected_unit_test IN LISTS MCO_EXPECTED_UNIT_TESTS)
     if(NOT TARGET ${mco_expected_unit_test})
         message(FATAL_ERROR
             "MCO-BUILD-GATE: BUILD_TESTING=ON but test target "
             "'${mco_expected_unit_test}' is missing from ${CMAKE_CURRENT_LIST_DIR}. "
-            "Add the suite back, or move it out of MCO_EXPECTED_UNIT_TESTS in the same "
+            "Add the suite back, or move it out of MCO_EXPECTED_UNIT_TESTS in cmake/McoExpectedUnitTests.cmake in the same "
             "change that removes it.")
     endif()
+    if(NOT mco_expected_unit_test IN_LIST mco_registered_unit_tests)
+        message(FATAL_ERROR
+            "MCO-BUILD-GATE: required test '${mco_expected_unit_test}' is not registered; "
+            "restore its add_test() call.")
+    endif()
 endforeach()
-
-
 
 # Second half of the gate: fails when no add_test() above survived to here.
 mco_testing_end()
