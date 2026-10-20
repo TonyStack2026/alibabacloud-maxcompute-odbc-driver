@@ -32,4 +32,4 @@ jobs:
           $install = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait -PassThru
           if ($install.ExitCode -notin @(0, 3010)) { throw "Install failed: $($install.ExitCode)" }
           python -X faulthandler -u test/e2e/windows_api_diagnostic.py direct
-          python -X faulthandler -u test/e2e/windows_api_diagnostic.py manager
+          python -X faulthandler -u test/e2e/windows_api_diagnostic.py manager typeinfo

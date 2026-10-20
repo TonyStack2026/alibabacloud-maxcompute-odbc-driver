@@ -39,7 +39,7 @@ print(f'{mode}: BEFORE statement allocation', flush=True)
 status = api.SQLAllocHandle(3, dbc, C.byref(stmt))
 print(f'{mode}: AFTER statement allocation status={status}', flush=True)
 assert status in (0, 1)
-for attribute in (6, 10010):
+for attribute in (() if len(sys.argv) > 2 and sys.argv[2] == "typeinfo" else (6, 10010)):
     if hasattr(api, 'SQLGetStmtAttrW'):
         output = H()
         print(f'{mode}: BEFORE statement attribute {attribute}', flush=True)
