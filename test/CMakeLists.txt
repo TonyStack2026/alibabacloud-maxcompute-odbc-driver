@@ -27,7 +27,7 @@ if(NOT WIN32)
 endif()
 
 # 查找 Google Test
-find_package(GTest QUIET)
+find_package(GTest REQUIRED)
 
 if(GTest_FOUND)
     # 添加测试主函数

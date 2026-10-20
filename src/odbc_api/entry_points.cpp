@@ -66,8 +66,8 @@ SQLRETURN GetInfoImpl(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
           return L"maxcompute_odbc.dll";
         else if (strcmp(ansi_str, "MaxCompute") == 0)
           return L"MaxCompute";
-        else if (strcmp(ansi_str, "1.0.0") == 0)
-          return L"1.0.0";
+        else if (strcmp(ansi_str, "1.0.1") == 0)
+          return L"1.0.1";
         else if (strcmp(ansi_str, "1.0") == 0)
           return L"1.0";
         else if (strcmp(ansi_str, "03.80") == 0)
@@ -122,7 +122,7 @@ SQLRETURN GetInfoImpl(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
       }
       case SQL_DRIVER_VER: {
         // 驱动程序版本 (这里用示例版本号)
-        const CharType *driver_ver = get_string_literal("1.0.0");
+        const CharType *driver_ver = get_string_literal("1.0.1");
         size_t len = std::char_traits<CharType>::length(driver_ver);
         if (InfoValuePtr && BufferLength > 0) {
           if constexpr (std::is_same_v<CharType, char>) {
@@ -1695,10 +1695,7 @@ SQLRETURN SQL_API SQLDriverConnect(
     // 7. 构建并写回输出连接字符串 (不包含密码)
     if (szConnStrOut && cbConnStrOutMax > 0) {
       MCO_LOG_DEBUG("Building output connection string");
-      std::string outStr =
-          "DRIVER={MaxCompute ODBC Driver};SERVER=" + config.endpoint +
-          ";PROJECT=" + config.project + ";UID=" + config.accessKeyId.value() +
-          ";";
+      std::string outStr = config.buildOutputConnectionString();
 
       size_t len_to_copy =
           outStr.length() < static_cast<size_t>(cbConnStrOutMax - 1)
@@ -1911,10 +1908,7 @@ SQLRETURN SQL_API SQLDriverConnectA(
     // 7. 构建并写回输出连接字符串 (不包含密码)
     if (szConnStrOut && cbConnStrOutMax > 0) {
       MCO_LOG_DEBUG("Building output connection string (ANSI)");
-      std::string outStr =
-          "DRIVER={MaxCompute ODBC Driver};SERVER=" + config.endpoint +
-          ";PROJECT=" + config.project + ";UID=" + config.accessKeyId.value() +
-          ";";
+      std::string outStr = config.buildOutputConnectionString();
 
       size_t len_to_copy =
           outStr.length() < static_cast<size_t>(cbConnStrOutMax - 1)
@@ -2000,8 +1994,7 @@ SQLRETURN SQL_API SQLDriverConnectW(SQLHDBC hDbc, SQLHWND hwndParent,
   MCO_LOG_DEBUG("SQLDriverConnectW: cbConnStrIn={}, szConnStrIn={}",
                 cbConnStrIn, szConnStrIn ? "non-null" : "null");
   std::string connStrIn = OdbcWStringToStdString(szConnStrIn, cbConnStrIn);
-  MCO_LOG_DEBUG("Parsed connection string ({} chars): {}", connStrIn.length(),
-                connStrIn);
+  MCO_LOG_DEBUG("Parsed connection string ({} characters)", connStrIn.length());
   auto &config =
       pConn->getConfigForUpdate();  // 假设有这么一个获取配置引用的方法
 
@@ -2131,10 +2124,7 @@ SQLRETURN SQL_API SQLDriverConnectW(SQLHDBC hDbc, SQLHWND hwndParent,
     // 7. 构建并写回输出连接字符串 (不包含密码)
     if (szConnStrOut && cbConnStrOutMax > 0) {
       MCO_LOG_DEBUG("Building output connection string (Wide)");
-      std::string outStr =
-          "DRIVER={MaxCompute ODBC Driver};SERVER=" + config.endpoint +
-          ";PROJECT=" + config.project + ";UID=" + config.accessKeyId.value() +
-          ";";
+      std::string outStr = config.buildOutputConnectionString();
 
       // Convert the output string to wide character format
       StdStringToOdbcWString(outStr, szConnStrOut, cbConnStrOutMax,

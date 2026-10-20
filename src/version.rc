@@ -1,8 +1,8 @@
 ﻿#include <winres.h>
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     1,0,0,0
-PRODUCTVERSION  1,0,0,0
+FILEVERSION     1,0,1,0
+PRODUCTVERSION  1,0,1,0
 FILEFLAGSMASK   0x3fL
 #ifdef _DEBUG
 FILEFLAGS       0x1L
@@ -19,12 +19,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "Alibaba Cloud"
             VALUE "FileDescription",  "MaxCompute ODBC Driver"
-            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "FileVersion",      "1.0.1.0"
             VALUE "InternalName",     "maxcompute_odbc"
             VALUE "LegalCopyright",   "Copyright © Alibaba Cloud. All rights reserved."
             VALUE "OriginalFilename", "maxcompute_odbc.dll"
             VALUE "ProductName",      "MaxCompute ODBC Driver"
-            VALUE "ProductVersion",   "1.0.0.0"
+            VALUE "ProductVersion",   "1.0.1.0"
         END
     END
     BLOCK "VarFileInfo"
