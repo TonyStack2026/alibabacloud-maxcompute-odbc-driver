@@ -286,7 +286,7 @@ jobs:
           cd ../..
 
           # Windows MSI
-          cp artifacts/maxcompute-odbc-windows-x64-msi/*.msi "release/" 2>/dev/null || true
+          cp artifacts/maxcompute-odbc-windows-x64-msi/*.msi "release/"
 
           # macOS archive
           cd artifacts/maxcompute-odbc-macos-x64
@@ -298,14 +298,19 @@ jobs:
           tar -czf "../../release/maxcompute-odbc-${VERSION}-linux-x64.tar.gz" *
           cd ../..
 
+          cd release
+          sha256sum *.msi *.zip *.tar.gz > SHA256SUMS
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: MaxCompute ODBC Driver ${{ needs.prepare.outputs.version }}
           files: release/*
           draft: false
           prerelease: false
           generate_release_notes: true
+          body_path: docs/releases/1.0.1.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
