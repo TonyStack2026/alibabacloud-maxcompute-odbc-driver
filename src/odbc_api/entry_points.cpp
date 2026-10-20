@@ -3808,6 +3808,69 @@ SQLRETURN SQL_API SQLGetInfoW(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
   }
 }
 
+// Advertise only implemented entry points, so the Driver Manager can avoid
+// unsupported callbacks after it recognizes the driver as Unicode.
+SQLRETURN SQL_API SQLGetFunctions(SQLHDBC ConnectionHandle,
+                                  SQLUSMALLINT FunctionId,
+                                  SQLUSMALLINT *SupportedPtr) {
+  MCO_LOG_DEBUG("SQLGetFunctions requested function {}", FunctionId);
+  auto *connection = maxcompute_odbc::HandleRegistry::instance()
+                         .get<maxcompute_odbc::ConnHandle>(ConnectionHandle);
+  if (!connection) return SQL_INVALID_HANDLE;
+  if (!SupportedPtr) {
+    connection->addDiagRecord({0, "HY009", "Invalid use of null pointer"});
+    return SQL_ERROR;
+  }
+  constexpr SQLUSMALLINT functions[] = {
+    SQL_API_SQLALLOCENV,
+    SQL_API_SQLFREEENV,
+    SQL_API_SQLALLOCCONNECT,
+    SQL_API_SQLFREECONNECT,
+    SQL_API_SQLALLOCSTMT,
+    SQL_API_SQLFREESTMT,
+    SQL_API_SQLALLOCHANDLE,
+    SQL_API_SQLFREEHANDLE,
+    SQL_API_SQLCONNECT,
+    SQL_API_SQLDISCONNECT,
+    SQL_API_SQLDRIVERCONNECT,
+    SQL_API_SQLEXECDIRECT,
+    SQL_API_SQLPREPARE,
+    SQL_API_SQLEXECUTE,
+    SQL_API_SQLFETCH,
+    SQL_API_SQLBINDCOL,
+    SQL_API_SQLNUMRESULTCOLS,
+    SQL_API_SQLDESCRIBECOL,
+    SQL_API_SQLROWCOUNT,
+    SQL_API_SQLCOLATTRIBUTE,
+    SQL_API_SQLGETDATA,
+    SQL_API_SQLTABLES,
+    SQL_API_SQLCOLUMNS,
+    SQL_API_SQLGETDIAGREC,
+    SQL_API_SQLGETDIAGFIELD,
+    SQL_API_SQLSETENVATTR,
+    SQL_API_SQLGETSTMTATTR,
+    SQL_API_SQLGETINFO,
+    SQL_API_SQLGETFUNCTIONS,
+    SQL_API_SQLGETCONNECTATTR,
+    SQL_API_SQLSETCONNECTATTR,
+    SQL_API_SQLSETSTMTATTR,
+    SQL_API_SQLMORERESULTS
+  };
+  if (FunctionId == SQL_API_ODBC3_ALL_FUNCTIONS) {
+    std::fill_n(SupportedPtr, SQL_API_ODBC3_ALL_FUNCTIONS_SIZE, SQL_FALSE);
+    for (const auto function : functions)
+      SupportedPtr[function >> 4] |= static_cast<SQLUSMALLINT>(1U << (function & 15));
+  } else if (FunctionId == SQL_API_ALL_FUNCTIONS) {
+    std::fill_n(SupportedPtr, 100, SQL_FALSE);
+    for (const auto function : functions)
+      if (function < 100) SupportedPtr[function] = SQL_TRUE;
+  } else {
+    *SupportedPtr = std::find(std::begin(functions), std::end(functions), FunctionId)
+                    != std::end(functions) ? SQL_TRUE : SQL_FALSE;
+  }
+  return SQL_SUCCESS;
+}
+
 // SQLMoreResults function to return SQL_NO_DATA
 SQLRETURN SQL_API SQLMoreResults(SQLHSTMT StatementHandle) {
   MCO_LOG_DEBUG("SQLMoreResults called with statement handle: {}",

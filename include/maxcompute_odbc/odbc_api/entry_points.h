@@ -7,6 +7,9 @@
 #include <sqlucode.h>
 
 // Function declarations for ODBC API entry points
+SQLRETURN SQL_API SQLGetFunctions(SQLHDBC ConnectionHandle,
+                                  SQLUSMALLINT FunctionId,
+                                  SQLUSMALLINT* SupportedPtr);
 
 // Handle Management Functions
 SQLRETURN SQL_API SQLAllocEnv(SQLHENV* EnvironmentHandle);

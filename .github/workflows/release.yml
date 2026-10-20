@@ -64,8 +64,18 @@ jobs:
         with:
           arch: x64
 
+      - name: Restore Windows dependency binaries
+        id: windows-vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .odbc-vcpkg-cache
+          key: ${{ runner.os }}-odbc-vcpkg-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+
       - name: Build Driver
+        env:
+          VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/.odbc-vcpkg-cache,readwrite'
         run: |
+          New-Item -ItemType Directory -Force -Path .odbc-vcpkg-cache | Out-Null
           cmake -B build_win64 `
             -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
@@ -146,15 +156,6 @@ jobs:
           candle.exe Product.wxs -dProductVersion="$version4" -out installer_build\Product.wixobj
           light.exe installer_build\Product.wixobj -ext WixUIExtension -ext WixUtilExtension -out "MaxCompute_ODBC_Driver_$version.msi"
 
-      - name: Verify installed Windows package
-        shell: pwsh
-        run: |
-          $msi = (Resolve-Path "MaxCompute_ODBC_Driver_*.msi").Path
-          $installer = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait -PassThru
-          if ($installer.ExitCode -notin @(0, 3010)) { throw "MSI installation failed: $($installer.ExitCode)" }
-          python -m pip install --only-binary=:all: pyodbc
-          python test/e2e/test_installed_driver.py
-
       - name: Upload DLL artifact
         uses: actions/upload-artifact@v4
         with:
@@ -168,6 +169,31 @@ jobs:
         with:
           name: maxcompute-odbc-windows-x64-msi
           path: MaxCompute_ODBC_Driver_*.msi
+
+      - name: Save Windows dependency binaries
+        if: always() && steps.windows-vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .odbc-vcpkg-cache
+          key: ${{ steps.windows-vcpkg-cache.outputs.cache-primary-key }}
+
+      - name: Verify installed Windows package
+        shell: pwsh
+        run: |
+          $msi = (Resolve-Path "MaxCompute_ODBC_Driver_*.msi").Path
+          $installer = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait -PassThru
+          if ($installer.ExitCode -notin @(0, 3010)) { throw "MSI installation failed: $($installer.ExitCode)" }
+          python -m pip install --only-binary=:all: pyodbc
+          python -X faulthandler -u test/e2e/test_installed_driver.py
+          $consumerExit = $LASTEXITCODE
+          Write-Host "Installed consumer exit code: $consumerExit"
+          if ($consumerExit -ne 0) {
+            Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-5)} -ErrorAction SilentlyContinue |
+              Where-Object { $_.ProviderName -in @('Application Error', 'Windows Error Reporting') } |
+              Select-Object -First 3 TimeCreated, Id, Message | Format-List
+            exit 1
+          }
+
 
   build-macos:
     runs-on: macos-latest

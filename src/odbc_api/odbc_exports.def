@@ -47,6 +47,9 @@ EXPORTS
     SQLGetStmtAttr
     SQLGetInfo
     SQLGetInfoW
+    SQLGetFunctions
+    SQLGetConnectAttr
+    SQLGetConnectAttrW
 
     SQLSetConnectAttr
     SQLSetConnectAttrW

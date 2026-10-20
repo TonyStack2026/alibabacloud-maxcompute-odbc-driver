@@ -38,6 +38,33 @@ TEST_F(Metadata, ExportsUnicodeConnectionEntryPoint) {
             SQLConnectW(nullptr, nullptr, 0, nullptr, 0, nullptr, 0));
 }
 
+TEST_F(Metadata, ReportsImplementedFunctionsInBothCapabilityArrays) {
+  SQLUSMALLINT supported = SQL_FALSE;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetFunctions(dbc, SQL_API_SQLDRIVERCONNECT, &supported));
+  EXPECT_EQ(SQL_TRUE, supported);
+  ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(dbc, SQL_API_SQLENDTRAN, &supported));
+  EXPECT_EQ(SQL_FALSE, supported);
+  SQLUSMALLINT legacy[100] = {};
+  ASSERT_EQ(SQL_SUCCESS, SQLGetFunctions(dbc, SQL_API_ALL_FUNCTIONS, legacy));
+  EXPECT_EQ(SQL_TRUE, legacy[SQL_API_SQLCONNECT]);
+  EXPECT_EQ(SQL_TRUE, legacy[SQL_API_SQLGETFUNCTIONS]);
+  SQLUSMALLINT odbc3[SQL_API_ODBC3_ALL_FUNCTIONS_SIZE] = {};
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetFunctions(dbc, SQL_API_ODBC3_ALL_FUNCTIONS, odbc3));
+  EXPECT_TRUE(SQL_FUNC_EXISTS(odbc3, SQL_API_SQLDRIVERCONNECT));
+  EXPECT_TRUE(SQL_FUNC_EXISTS(odbc3, SQL_API_SQLGETCONNECTATTR));
+  EXPECT_FALSE(SQL_FUNC_EXISTS(odbc3, SQL_API_SQLENDTRAN));
+}
+
+TEST_F(Metadata, ExportsConnectionAttributeGetters) {
+  SQLUINTEGER autocommit = 0;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetConnectAttrW(dbc, SQL_ATTR_AUTOCOMMIT, &autocommit,
+                               sizeof(autocommit), nullptr));
+  EXPECT_EQ(SQL_AUTOCOMMIT_ON, autocommit);
+}
+
 TEST_F(Metadata, SmallBuffersTruncateWithoutWritingOutsideTheirCapacity) {
   for (const SQLSMALLINT capacity :
        {SQLSMALLINT(0), SQLSMALLINT(1), SQLSMALLINT(4)}) {
