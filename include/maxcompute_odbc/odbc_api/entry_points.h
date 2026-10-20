@@ -10,6 +10,8 @@
 SQLRETURN SQL_API SQLGetFunctions(SQLHDBC ConnectionHandle,
                                   SQLUSMALLINT FunctionId,
                                   SQLUSMALLINT* SupportedPtr);
+SQLRETURN SQL_API SQLGetTypeInfo(SQLHSTMT StatementHandle, SQLSMALLINT DataType);
+SQLRETURN SQL_API SQLGetTypeInfoW(SQLHSTMT StatementHandle, SQLSMALLINT DataType);
 
 // Handle Management Functions
 SQLRETURN SQL_API SQLAllocEnv(SQLHENV* EnvironmentHandle);
@@ -140,6 +142,9 @@ SQLRETURN SQL_API SQLSetEnvAttr(SQLHENV EnvironmentHandle, SQLINTEGER Attribute,
 SQLRETURN SQL_API SQLGetStmtAttr(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
                                  SQLPOINTER Value, SQLINTEGER BufferLength,
                                  SQLINTEGER* StringLength);
+SQLRETURN SQL_API SQLGetStmtAttrW(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
+                                  SQLPOINTER Value, SQLINTEGER BufferLength,
+                                  SQLINTEGER* StringLength);
 SQLRETURN SQL_API SQLSetStmtAttr(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
                                  SQLPOINTER ValuePtr, SQLINTEGER StringLength);
 SQLRETURN SQL_API SQLSetStmtAttrW(SQLHSTMT StatementHandle,

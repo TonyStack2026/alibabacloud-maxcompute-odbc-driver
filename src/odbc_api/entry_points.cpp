@@ -3115,7 +3115,7 @@ SQLRETURN SQL_API SQLSetEnvAttr(SQLHENV EnvironmentHandle, SQLINTEGER Attribute,
 }
 
 // SQLGetStmtAttr function for retrieving statement attributes
-SQLRETURN SQL_API SQLGetStmtAttr(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
+static SQLRETURN GetStatementAttribute(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
                                  SQLPOINTER ValuePtr, SQLINTEGER BufferLength,
                                  SQLINTEGER *StringLengthPtr) {
   MCO_LOG_DEBUG("SQLGetStmtAttr called with stmt handle: {}, attribute: {}",
@@ -3560,6 +3560,22 @@ SQLRETURN SQL_API SQLSetStmtAttrW(SQLHSTMT StatementHandle,
   }
 }
 
+SQLRETURN SQL_API SQLGetStmtAttr(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
+                                 SQLPOINTER ValuePtr, SQLINTEGER BufferLength,
+                                 SQLINTEGER *StringLengthPtr) {
+  return GetStatementAttribute(StatementHandle, Attribute, ValuePtr, BufferLength,
+                                StringLengthPtr);
+}
+
+// Standard statement attributes are numeric values or pointers. Both entry
+// points use the same implementation, including unsupported-attribute errors.
+SQLRETURN SQL_API SQLGetStmtAttrW(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
+                                  SQLPOINTER ValuePtr, SQLINTEGER BufferLength,
+                                  SQLINTEGER *StringLengthPtr) {
+  return GetStatementAttribute(StatementHandle, Attribute, ValuePtr, BufferLength,
+                                StringLengthPtr);
+}
+
 // SQLSetStmtAttr function for setting statement attributes
 SQLRETURN SQL_API SQLSetStmtAttr(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
                                  SQLPOINTER ValuePtr, SQLINTEGER StringLength) {
@@ -3797,8 +3813,29 @@ SQLRETURN SQL_API SQLGetInfoW(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
   }
 }
 
-// Advertise only implemented entry points, so the Driver Manager can avoid
-// unsupported callbacks after it recognizes the driver as Unicode.
+// Windows dispatches the Unicode type-info callback even when capability
+// discovery reports it unsupported. Return the usual IM001 diagnostic rather
+// than leaving a missing callback that can cause a native access violation.
+static SQLRETURN UnsupportedTypeInformation(SQLHSTMT StatementHandle, SQLSMALLINT DataType) {
+  MCO_LOG_DEBUG("SQLGetTypeInfo requested type {}", DataType);
+  auto *statement = maxcompute_odbc::HandleRegistry::instance()
+                        .get<maxcompute_odbc::StmtHandle>(StatementHandle);
+  if (!statement) return SQL_INVALID_HANDLE;
+  statement->clearDiagRecords();
+  statement->addDiagRecord({0, "IM001", "Type information is not supported by this driver"});
+  return SQL_ERROR;
+}
+
+SQLRETURN SQL_API SQLGetTypeInfo(SQLHSTMT StatementHandle, SQLSMALLINT DataType) {
+  return UnsupportedTypeInformation(StatementHandle, DataType);
+}
+
+SQLRETURN SQL_API SQLGetTypeInfoW(SQLHSTMT StatementHandle, SQLSMALLINT DataType) {
+  return UnsupportedTypeInformation(StatementHandle, DataType);
+}
+
+// Advertise only supported operations. Compatibility error entry points such
+// as SQLGetTypeInfo deliberately remain absent from the capability arrays.
 SQLRETURN SQL_API SQLGetFunctions(SQLHDBC ConnectionHandle,
                                   SQLUSMALLINT FunctionId,
                                   SQLUSMALLINT *SupportedPtr) {

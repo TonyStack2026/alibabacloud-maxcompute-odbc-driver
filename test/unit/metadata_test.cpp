@@ -65,6 +65,35 @@ TEST_F(Metadata, ExportsConnectionAttributeGetters) {
   EXPECT_EQ(SQL_AUTOCOMMIT_ON, autocommit);
 }
 
+TEST_F(Metadata, ExportsUnicodeStatementAttributeGetter) {
+  SQLHSTMT statement = SQL_NULL_HSTMT;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &statement));
+  SQLULEN cursor_type = 0;
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLGetStmtAttrW(statement, SQL_ATTR_CURSOR_TYPE, &cursor_type,
+                            sizeof(cursor_type), nullptr));
+  EXPECT_EQ(SQL_CURSOR_FORWARD_ONLY, cursor_type);
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement));
+}
+
+TEST_F(Metadata,
+       UnsupportedTypeInfoReturnsDiagnosticWithoutAdvertisingSupport) {
+  SQLUSMALLINT supported = SQL_TRUE;
+  ASSERT_EQ(SQL_SUCCESS,
+            SQLGetFunctions(dbc, SQL_API_SQLGETTYPEINFO, &supported));
+  EXPECT_EQ(SQL_FALSE, supported);
+  SQLHSTMT statement = SQL_NULL_HSTMT;
+  ASSERT_EQ(SQL_SUCCESS, SQLAllocHandle(SQL_HANDLE_STMT, dbc, &statement));
+  EXPECT_EQ(SQL_ERROR, SQLGetTypeInfoW(statement, SQL_VARCHAR));
+  SQLCHAR state[6] = {};
+  SQLCHAR message[128] = {};
+  EXPECT_EQ(SQL_SUCCESS,
+            SQLGetDiagRec(SQL_HANDLE_STMT, statement, 1, state, nullptr,
+                          message, sizeof(message), nullptr));
+  EXPECT_STREQ("IM001", reinterpret_cast<char*>(state));
+  EXPECT_EQ(SQL_SUCCESS, SQLFreeHandle(SQL_HANDLE_STMT, statement));
+}
+
 TEST_F(Metadata, SmallBuffersTruncateWithoutWritingOutsideTheirCapacity) {
   for (const SQLSMALLINT capacity :
        {SQLSMALLINT(0), SQLSMALLINT(1), SQLSMALLINT(4)}) {
