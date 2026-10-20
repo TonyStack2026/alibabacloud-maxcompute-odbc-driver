@@ -13,6 +13,7 @@ for options in (
         "Driver={MaxCompute ODBC Driver};Endpoint=http://127.0.0.1:9/api;"
         "UID=package_probe;PWD=package_probe;" + options,
         timeout=5,
+        autocommit=True,
     ) as connection:
         version = connection.getinfo(pyodbc.SQL_DRIVER_VER)
         assert version == "1.0.1", f"Unexpected installed driver: {version}"

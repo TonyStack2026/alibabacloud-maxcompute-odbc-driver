@@ -33,6 +33,11 @@ TEST_F(Metadata, DriverVersionUsesUtf16AndByteLengths) {
   EXPECT_EQ(5, length);
 }
 
+TEST_F(Metadata, ExportsUnicodeConnectionEntryPoint) {
+  EXPECT_EQ(SQL_INVALID_HANDLE,
+            SQLConnectW(nullptr, nullptr, 0, nullptr, 0, nullptr, 0));
+}
+
 TEST_F(Metadata, SmallBuffersTruncateWithoutWritingOutsideTheirCapacity) {
   for (const SQLSMALLINT capacity :
        {SQLSMALLINT(0), SQLSMALLINT(1), SQLSMALLINT(4)}) {

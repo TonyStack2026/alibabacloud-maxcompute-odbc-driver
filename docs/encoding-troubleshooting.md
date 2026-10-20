@@ -4,6 +4,9 @@ Version 1.0.1 fixes braced `ClientCharset` values and parameters following a
 double quoted value. It also preserves `ClientCharset` in the completed
 connection string returned by the driver.
 
+It also exposes the Unicode connection entry point required by the Windows
+Driver Manager and returns UTF-16 string metadata from `SQLGetInfoW`.
+
 `ClientCharset` controls the bytes returned for `SQL_C_CHAR`. It does not
 change MaxCompute data, SQL text encoding, or `SQL_C_WCHAR`, which uses UTF-16.
 

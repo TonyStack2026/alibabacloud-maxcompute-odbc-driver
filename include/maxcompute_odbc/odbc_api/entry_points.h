@@ -26,6 +26,10 @@ SQLRETURN SQL_API SQLConnect(SQLHDBC ConnectionHandle, SQLCHAR* ServerName,
                              SQLSMALLINT NameLength1, SQLCHAR* UserName,
                              SQLSMALLINT NameLength2, SQLCHAR* Authentication,
                              SQLSMALLINT NameLength3);
+SQLRETURN SQL_API SQLConnectW(SQLHDBC ConnectionHandle, SQLWCHAR* ServerName,
+                              SQLSMALLINT NameLength1, SQLWCHAR* UserName,
+                              SQLSMALLINT NameLength2, SQLWCHAR* Authentication,
+                              SQLSMALLINT NameLength3);
 SQLRETURN SQL_API SQLDriverConnect(
     SQLHDBC hDbc, SQLHWND hwndParent, SQLCHAR* szConnStrIn,
     SQLSMALLINT cbConnStrIn, SQLCHAR* szConnStrOut, SQLSMALLINT cbConnStrOutMax,

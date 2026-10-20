@@ -1236,6 +1236,20 @@ SQLRETURN SQL_API SQLConnect(SQLHDBC ConnectionHandle, SQLCHAR *ServerName,
                        OdbcStringToStdString(Authentication, NameLength3));
 }
 
+// Windows identifies Unicode drivers by this export, even for applications
+// that connect through SQLDriverConnectW rather than SQLConnectW.
+SQLRETURN SQL_API SQLConnectW(SQLHDBC ConnectionHandle, SQLWCHAR *ServerName,
+                              SQLSMALLINT NameLength1, SQLWCHAR *UserName,
+                              SQLSMALLINT NameLength2, SQLWCHAR *Authentication,
+                              SQLSMALLINT NameLength3) {
+  auto *conn = maxcompute_odbc::HandleRegistry::instance()
+                   .get<maxcompute_odbc::ConnHandle>(ConnectionHandle);
+  if (!conn) return SQL_INVALID_HANDLE;
+  return conn->connect(OdbcWStringToStdString(ServerName, NameLength1),
+                       OdbcWStringToStdString(UserName, NameLength2),
+                       OdbcWStringToStdString(Authentication, NameLength3));
+}
+
 // SQLDisconnect is an old ODBC 2.x function for disconnecting from a data
 // source
 SQLRETURN SQL_API SQLDisconnect(SQLHDBC ConnectionHandle) {

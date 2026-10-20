@@ -11,6 +11,7 @@ EXPORTS
     SQLFreeHandle
 
     SQLConnect
+    SQLConnectW
     SQLDisconnect
     SQLDriverConnect
     SQLDriverConnectA
