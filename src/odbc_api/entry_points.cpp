@@ -1,6 +1,8 @@
 #include "maxcompute_odbc/common/logging.h"
 #include "maxcompute_odbc/common/utils.h"
 #include "maxcompute_odbc/odbc_api/entry_points.h"
+#include "maxcompute_odbc/odbc_api/encoding.h"
+#include <limits>
 #include "maxcompute_odbc/odbc_api/handle_registry.h"
 #include "maxcompute_odbc/odbc_api/handles.h"
 #include <cstring>      // for strlen, strcmp, memcpy
@@ -3719,8 +3721,77 @@ SQLRETURN SQL_API SQLGetInfo(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
 SQLRETURN SQL_API SQLGetInfoW(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
                               SQLPOINTER InfoValuePtr, SQLSMALLINT BufferLength,
                               SQLSMALLINT *StringLengthPtr) {
-  return GetInfoImpl<char>(ConnectionHandle, InfoType, InfoValuePtr,
-                           BufferLength, StringLengthPtr);
+  // Numeric attributes retain the ANSI implementation's native ODBC types.
+  // String attributes must return SQLWCHAR (UTF-16), never ANSI bytes or the
+  // platform's wchar_t, which is 32 bits on Unix.
+  switch (InfoType) {
+    case SQL_DRIVER_NAME:
+    case SQL_DRIVER_VER:
+    case SQL_DATA_SOURCE_NAME:
+    case SQL_DATABASE_NAME:
+    case SQL_DBMS_NAME:
+    case SQL_DBMS_VER:
+    case SQL_DRIVER_ODBC_VER:
+    case SQL_ODBC_VER:
+    case SQL_IDENTIFIER_QUOTE_CHAR:
+    case SQL_KEYWORDS:
+    case SQL_CATALOG_TERM:
+    case SQL_PROCEDURE_TERM:
+    case SQL_SCHEMA_TERM:
+    case SQL_CATALOG_NAME_SEPARATOR:
+      break;
+    default:
+      return GetInfoImpl<char>(ConnectionHandle, InfoType, InfoValuePtr,
+                               BufferLength, StringLengthPtr);
+  }
+  auto *connection = maxcompute_odbc::HandleRegistry::instance()
+                         .get<maxcompute_odbc::ConnHandle>(ConnectionHandle);
+  if (!connection) return SQL_INVALID_HANDLE;
+  if (BufferLength < 0) {
+    connection->addDiagRecord({0, "HY090", "Invalid string or buffer length"});
+    return SQL_ERROR;
+  }
+  try {
+    char dummy = 0;
+    SQLSMALLINT utf8_length = 0;
+    auto result = GetInfoImpl<char>(ConnectionHandle, InfoType, &dummy, 0,
+                                    &utf8_length);
+    if (!SQL_SUCCEEDED(result)) return result;
+    if (utf8_length < 0 ||
+        utf8_length == std::numeric_limits<SQLSMALLINT>::max()) {
+      connection->addDiagRecord({0, "HY090", "Metadata string is too long"});
+      return SQL_ERROR;
+    }
+    std::vector<char> utf8(static_cast<size_t>(utf8_length) + 1);
+    result = GetInfoImpl<char>(ConnectionHandle, InfoType, utf8.data(),
+                              static_cast<SQLSMALLINT>(utf8.size()), nullptr);
+    if (!SQL_SUCCEEDED(result)) return result;
+    const auto units = maxcompute_odbc::encoding::Utf16FromUtf8(
+        std::string(utf8.data(), static_cast<size_t>(utf8_length)));
+    const size_t bytes = units.size() * sizeof(SQLWCHAR);
+    if (bytes > static_cast<size_t>(std::numeric_limits<SQLSMALLINT>::max())) {
+      connection->addDiagRecord({0, "HY090", "Metadata string is too long"});
+      return SQL_ERROR;
+    }
+    if (StringLengthPtr) *StringLengthPtr = static_cast<SQLSMALLINT>(bytes);
+    if (!InfoValuePtr) return SQL_SUCCESS;
+    const size_t capacity = static_cast<size_t>(BufferLength) / sizeof(SQLWCHAR);
+    size_t copied = capacity ? std::min(units.size(), capacity - 1) : 0;
+    if (copied && copied < units.size() && units[copied - 1] >= 0xd800 &&
+        units[copied - 1] <= 0xdbff)
+      --copied;
+    auto *output = static_cast<SQLWCHAR *>(InfoValuePtr);
+    std::copy_n(units.begin(), copied, output);
+    if (capacity) output[copied] = 0;
+    if (copied < units.size()) {
+      connection->addDiagRecord({0, "01004", "String data, right truncated."});
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    return SQL_SUCCESS;
+  } catch (const std::exception &) {
+    connection->addDiagRecord({0, "HY000", "Unable to encode metadata string"});
+    return SQL_ERROR;
+  }
 }
 
 // SQLMoreResults function to return SQL_NO_DATA

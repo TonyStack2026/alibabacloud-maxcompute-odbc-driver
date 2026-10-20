@@ -80,6 +80,11 @@ if(GTest_FOUND)
     target_link_libraries(statement_fetch_test PRIVATE maxcompute_client config common test_main ${ODBC_FRAMEWORKS})
     add_test(NAME statement_fetch_test COMMAND statement_fetch_test)
 
+    # Exercise the exported API, including the UTF-16 ABI seen by Power BI.
+    add_executable(metadata_test unit/metadata_test.cpp)
+    target_link_libraries(metadata_test PRIVATE odbc_api test_main)
+    add_test(NAME metadata_test COMMAND metadata_test)
+
     message(STATUS "Google Test found. Building all tests.")
 else()
     message(STATUS "Google Test not found. Skipping tests.")
