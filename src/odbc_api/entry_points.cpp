@@ -1708,28 +1708,21 @@ SQLRETURN SQL_API SQLDriverConnect(
     MCO_LOG_INFO("Successfully connected to MaxCompute project '{}' at '{}'.",
                  config.project, config.endpoint);
 
-    // 7. 构建并写回输出连接字符串 (不包含密码)
-    if (szConnStrOut && cbConnStrOutMax > 0) {
-      MCO_LOG_DEBUG("Building output connection string");
-      std::string outStr = config.buildOutputConnectionString();
-
-      size_t len_to_copy =
-          outStr.length() < static_cast<size_t>(cbConnStrOutMax - 1)
-              ? outStr.length()
-              : static_cast<size_t>(cbConnStrOutMax - 1);
-      memcpy(szConnStrOut, outStr.c_str(), len_to_copy);
-      szConnStrOut[len_to_copy] = '\0';
-
-      if (pcbConnStrOut) {
-        *pcbConnStrOut = static_cast<SQLSMALLINT>(outStr.length());
-        if (outStr.length() > len_to_copy) {
-          // 如果缓冲区不够大，需要返回 SQL_SUCCESS_WITH_INFO
-          MCO_LOG_WARNING(
-              "Connection string buffer too small, connection string "
-              "truncated.");
-          pConn->addDiagRecord({0, "01004", "String data, right truncated."});
-          return SQL_SUCCESS_WITH_INFO;
-        }
+    // 7. ANSI output lengths are bytes, including length-only calls.
+    const auto completed = config.buildOutputConnectionString();
+    if (cbConnStrOutMax < 0 ||
+        completed.size() > static_cast<size_t>(std::numeric_limits<SQLSMALLINT>::max())) {
+      pConn->addDiagRecord({0, "HY090", "Invalid connection string buffer length"});
+      return SQL_ERROR;
+    }
+    if (pcbConnStrOut) *pcbConnStrOut = static_cast<SQLSMALLINT>(completed.size());
+    if (szConnStrOut) {
+      const size_t capacity = static_cast<size_t>(cbConnStrOutMax);
+      maxcompute_odbc::encoding::WriteUtf8AsCharset(
+          completed, "UTF-8", reinterpret_cast<char *>(szConnStrOut), capacity);
+      if (completed.size() >= capacity) {
+        pConn->addDiagRecord({0, "01004", "String data, right truncated."});
+        return SQL_SUCCESS_WITH_INFO;
       }
     }
 
@@ -1921,28 +1914,21 @@ SQLRETURN SQL_API SQLDriverConnectA(
     MCO_LOG_INFO("Successfully connected to MaxCompute project '{}' at '{}'.",
                  config.project, config.endpoint);
 
-    // 7. 构建并写回输出连接字符串 (不包含密码)
-    if (szConnStrOut && cbConnStrOutMax > 0) {
-      MCO_LOG_DEBUG("Building output connection string (ANSI)");
-      std::string outStr = config.buildOutputConnectionString();
-
-      size_t len_to_copy =
-          outStr.length() < static_cast<size_t>(cbConnStrOutMax - 1)
-              ? outStr.length()
-              : static_cast<size_t>(cbConnStrOutMax - 1);
-      memcpy(szConnStrOut, outStr.c_str(), len_to_copy);
-      szConnStrOut[len_to_copy] = '\0';
-
-      if (pcbConnStrOut) {
-        *pcbConnStrOut = static_cast<SQLSMALLINT>(outStr.length());
-        if (outStr.length() > len_to_copy) {
-          // 如果缓冲区不够大，需要返回 SQL_SUCCESS_WITH_INFO
-          MCO_LOG_WARNING(
-              "Connection string buffer too small, connection string "
-              "truncated in SQLDriverConnectA.");
-          pConn->addDiagRecord({0, "01004", "String data, right truncated."});
-          return SQL_SUCCESS_WITH_INFO;
-        }
+    // 7. ANSI output lengths are bytes, including length-only calls.
+    const auto completed = config.buildOutputConnectionString();
+    if (cbConnStrOutMax < 0 ||
+        completed.size() > static_cast<size_t>(std::numeric_limits<SQLSMALLINT>::max())) {
+      pConn->addDiagRecord({0, "HY090", "Invalid connection string buffer length"});
+      return SQL_ERROR;
+    }
+    if (pcbConnStrOut) *pcbConnStrOut = static_cast<SQLSMALLINT>(completed.size());
+    if (szConnStrOut) {
+      const size_t capacity = static_cast<size_t>(cbConnStrOutMax);
+      maxcompute_odbc::encoding::WriteUtf8AsCharset(
+          completed, "UTF-8", reinterpret_cast<char *>(szConnStrOut), capacity);
+      if (completed.size() >= capacity) {
+        pConn->addDiagRecord({0, "01004", "String data, right truncated."});
+        return SQL_SUCCESS_WITH_INFO;
       }
     }
 
@@ -2137,21 +2123,24 @@ SQLRETURN SQL_API SQLDriverConnectW(SQLHDBC hDbc, SQLHWND hwndParent,
     MCO_LOG_INFO("Successfully connected to MaxCompute project '{}' at '{}'.",
                  config.project, config.endpoint);
 
-    // 7. 构建并写回输出连接字符串 (不包含密码)
-    if (szConnStrOut && cbConnStrOutMax > 0) {
-      MCO_LOG_DEBUG("Building output connection string (Wide)");
-      std::string outStr = config.buildOutputConnectionString();
-
-      // Convert the output string to wide character format
-      StdStringToOdbcWString(outStr, szConnStrOut, cbConnStrOutMax,
-                             pcbConnStrOut);
-
-      // Check if the output was truncated
-      if (pcbConnStrOut && outStr.length() > (cbConnStrOutMax - 1)) {
-        // 如果缓冲区不够大，需要返回 SQL_SUCCESS_WITH_INFO
-        MCO_LOG_WARNING(
-            "Connection string buffer too small, connection string "
-            "truncated in SQLDriverConnectW.");
+    // 7. SQLDriverConnectW lengths and capacities are UTF-16 characters.
+    const auto completed = maxcompute_odbc::encoding::Utf16FromUtf8(
+        config.buildOutputConnectionString());
+    if (cbConnStrOutMax < 0 ||
+        completed.size() > static_cast<size_t>(std::numeric_limits<SQLSMALLINT>::max())) {
+      pConn->addDiagRecord({0, "HY090", "Invalid connection string buffer length"});
+      return SQL_ERROR;
+    }
+    if (pcbConnStrOut) *pcbConnStrOut = static_cast<SQLSMALLINT>(completed.size());
+    if (szConnStrOut) {
+      const size_t capacity = static_cast<size_t>(cbConnStrOutMax);
+      size_t copied = capacity ? std::min(completed.size(), capacity - 1) : 0;
+      if (copied && copied < completed.size() && completed[copied - 1] >= 0xd800 &&
+          completed[copied - 1] <= 0xdbff)
+        --copied;
+      std::copy_n(completed.begin(), copied, szConnStrOut);
+      if (capacity) szConnStrOut[copied] = 0;
+      if (copied < completed.size()) {
         pConn->addDiagRecord({0, "01004", "String data, right truncated."});
         return SQL_SUCCESS_WITH_INFO;
       }

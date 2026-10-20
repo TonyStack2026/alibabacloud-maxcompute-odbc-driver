@@ -35,12 +35,18 @@ def verify_unicode_driver_manager_path():
         check(odbc.SQLSetEnvAttr(env, 200, handle(3), 0), "Set ODBC version")
         check(odbc.SQLAllocHandle(2, env, C.byref(dbc)), "Allocate connection")
         print("Connecting Unicode probe through Windows Driver Manager", flush=True)
+        completed = C.create_unicode_buffer(1024)
+        completed_length = short()
         check(odbc.SQLDriverConnectW(
             dbc, None,
             'Driver={MaxCompute ODBC Driver};Endpoint=http://127.0.0.1:9/api;'
             'Project="中文探针";ClientCharset={GBK};UID=package_probe;PWD=package_probe;',
-            -3, None, 0, None, 0), "Unicode connection")
+            -3, completed, len(completed), C.byref(completed_length), 0), "Unicode connection")
         connected = True
+        assert completed_length.value == len(completed.value.encode("utf-16-le")) // 2
+        assert "ClientCharset=GBK;" in completed.value
+        assert "中文探针" in completed.value
+        assert "PWD=" not in completed.value.upper()
         for info, expected in ((7, "1.0.1"), (16, "中文探针"), (17, "MaxCompute")):
             output, length = C.create_unicode_buffer(128), short()
             check(odbc.SQLGetInfoW(dbc, info, output, C.sizeof(output), C.byref(length)), "Unicode metadata")

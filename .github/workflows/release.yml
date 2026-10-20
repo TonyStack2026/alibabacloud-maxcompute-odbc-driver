@@ -69,7 +69,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .odbc-vcpkg-cache
-          key: ${{ runner.os }}-odbc-vcpkg-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          key: ${{ runner.os }}-odbc-vcpkg-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-odbc-vcpkg-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
 
       - name: Build Driver
         env:
