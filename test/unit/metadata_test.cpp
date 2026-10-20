@@ -132,3 +132,19 @@ TEST_F(Metadata, OtherStringsAndNumericAttributesRetainTheirTypes) {
   EXPECT_EQ(128, limit);
   EXPECT_EQ(sizeof(limit), length);
 }
+
+TEST_F(Metadata, ReportsCharacterConversionCapabilities) {
+  const SQLUSMALLINT infos[] = {
+      SQL_CONVERT_CHAR,  SQL_CONVERT_VARCHAR,  SQL_CONVERT_LONGVARCHAR,
+      SQL_CONVERT_WCHAR, SQL_CONVERT_WVARCHAR, SQL_CONVERT_WLONGVARCHAR};
+  for (const SQLUSMALLINT info : infos) {
+    SQLUINTEGER caps = 0;
+    SQLSMALLINT length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfoW(dbc, info, &caps, sizeof(caps), &length))
+        << "info=" << info;
+    EXPECT_EQ(static_cast<SQLSMALLINT>(sizeof(caps)), length);
+    EXPECT_EQ(SQL_CVT_CHAR | SQL_CVT_VARCHAR | SQL_CVT_WCHAR | SQL_CVT_WVARCHAR,
+              caps)
+        << "info=" << info;
+  }
+}

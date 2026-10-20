@@ -38,11 +38,14 @@ class TestCharset(BaseTest):
         if charset is not None:
             conn_str += f"ClientCharset={charset};"
         conn = pyodbc.connect(conn_str)
-        # 强制 SQL_CHAR 列用 SQL_C_CHAR 取, 用 latin-1 解码 (1:1 字节映射,
+        # 强制字符列用 SQL_C_CHAR 取, 用 latin-1 解码 (1:1 字节映射,
         # 不会丢字节, 便于 .encode('latin-1') 回拿裸字节).
         # pyodbc 没暴露 SQL_C_CHAR; 它和 SQL_CHAR 在 ODBC 头里同值 (1).
-        conn.setdecoding(pyodbc.SQL_CHAR, encoding="latin-1",
-                         ctype=pyodbc.SQL_CHAR)
+        # 文本列现在上报为 SQL_WVARCHAR/SQL_WCHAR, 所以同时为宽类型指定
+        # SQL_C_CHAR, 保证这条测试仍然覆盖驱动的 ClientCharset 路径.
+        # pyodbc 只接受 SQL_CHAR/SQL_WCHAR 作为 setdecoding 的 sqltype.
+        for sql_type in (pyodbc.SQL_CHAR, pyodbc.SQL_WCHAR):
+            conn.setdecoding(sql_type, encoding="latin-1", ctype=pyodbc.SQL_CHAR)
         return conn
 
     def _read_chinese_bytes(self, conn) -> bytes:

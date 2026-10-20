@@ -1,4 +1,5 @@
 #include "maxcompute_odbc/common/logging.h"
+#include "maxcompute_odbc/maxcompute_client/typeinfo.h"
 #include "maxcompute_odbc/odbc_api/handles.h"
 #include <cstring>
 #include <gtest/gtest.h>
@@ -84,4 +85,97 @@ TEST(StatementFetch, ParsedCharsetReachesBoundAndGetDataResults) {
       }
     }
   }
+}
+
+TEST(StatementMetadata, TextColumnsReportUnicodeTypesAndOdbcTypeNames) {
+  StmtHandle stmt(nullptr);
+  std::vector<Column> columns;
+  columns.push_back(
+      Column::buildColumn("i", PrimitiveTypeInfo(OdpsType::BIGINT)));
+  columns.push_back(
+      Column::buildColumn("s", PrimitiveTypeInfo(OdpsType::STRING)));
+  columns.push_back(Column::buildColumn("v", VarcharTypeInfo(50)));
+  columns.push_back(Column::buildColumn("c", CharTypeInfo(20)));
+  columns.push_back(
+      Column::buildColumn("b", PrimitiveTypeInfo(OdpsType::BINARY)));
+  columns.push_back(Column::buildColumn("d", DecimalTypeInfo(38, 10)));
+  auto schema = std::make_shared<ResultSetSchema>(std::move(columns));
+  stmt.setResultStream(
+      std::make_unique<StaticResultStream>(schema, std::vector<Record>{}));
+
+  struct Expected {
+    SQLUSMALLINT column;
+    SQLSMALLINT type;
+    SQLULEN size;
+    const char* type_name;
+  };
+  const Expected expected[] = {
+      {1, SQL_BIGINT, 19, "BIGINT"},
+      {2, SQL_WVARCHAR, 65535, "WVARCHAR"},
+      {3, SQL_WVARCHAR, 50, "WVARCHAR"},
+      {4, SQL_WCHAR, 20, "WCHAR"},
+      {5, SQL_VARBINARY, 65535, "VARBINARY"},
+      {6, SQL_VARCHAR, 65535, "VARCHAR"},
+  };
+
+  for (const auto& e : expected) {
+    SQLCHAR name[64] = {};
+    SQLSMALLINT name_len = 0;
+    SQLSMALLINT type = 0;
+    SQLULEN size = 0;
+    SQLSMALLINT decimal_digits = 0;
+    SQLSMALLINT nullable = 0;
+    ASSERT_EQ(SQL_SUCCESS,
+              stmt.describeCol(e.column, name, sizeof(name), &name_len, &type,
+                               &size, &decimal_digits, &nullable))
+        << "column " << e.column;
+    EXPECT_EQ(e.type, type) << "column " << e.column;
+    EXPECT_EQ(e.size, size) << "column " << e.column;
+
+    char narrow[32] = {};
+    SQLSMALLINT narrow_len = -1;
+    ASSERT_EQ(SQL_SUCCESS,
+              stmt.getColAttribute(e.column, SQL_DESC_TYPE_NAME, narrow,
+                                   sizeof(narrow), &narrow_len, nullptr));
+    EXPECT_STREQ(e.type_name, narrow) << "column " << e.column;
+    EXPECT_EQ(static_cast<SQLSMALLINT>(std::strlen(e.type_name)), narrow_len);
+
+    SQLWCHAR wide[32] = {};
+    SQLSMALLINT wide_len = -1;
+    ASSERT_EQ(SQL_SUCCESS,
+              stmt.getColAttribute(e.column, SQL_DESC_TYPE_NAME, wide,
+                                   sizeof(wide), &wide_len, nullptr, true));
+    EXPECT_EQ(static_cast<SQLSMALLINT>(std::strlen(e.type_name)), wide_len);
+    for (size_t i = 0; e.type_name[i] != '\0'; ++i) {
+      EXPECT_EQ(static_cast<SQLWCHAR>(e.type_name[i]), wide[i]);
+    }
+    EXPECT_EQ(0, wide[std::strlen(e.type_name)]);
+
+    SQLSMALLINT length_only = -1;
+    ASSERT_EQ(SQL_SUCCESS,
+              stmt.getColAttribute(e.column, SQL_DESC_TYPE_NAME, nullptr, 0,
+                                   &length_only, nullptr));
+    EXPECT_EQ(static_cast<SQLSMALLINT>(std::strlen(e.type_name)), length_only);
+  }
+}
+
+TEST(StatementMetadata, WideTypeNameRespectsByteBufferLength) {
+  StmtHandle stmt(nullptr);
+  std::vector<Column> columns;
+  columns.push_back(
+      Column::buildColumn("s", PrimitiveTypeInfo(OdpsType::STRING)));
+  auto schema = std::make_shared<ResultSetSchema>(std::move(columns));
+  stmt.setResultStream(
+      std::make_unique<StaticResultStream>(schema, std::vector<Record>{}));
+
+  // 6 bytes hold three UTF-16 units: two characters plus the terminator.
+  SQLWCHAR buffer[4] = {0x5555, 0x5555, 0x5555, 0x5555};
+  SQLSMALLINT length = -1;
+  ASSERT_EQ(SQL_SUCCESS, stmt.getColAttribute(1, SQL_DESC_TYPE_NAME, buffer, 6,
+                                              &length, nullptr, true));
+  EXPECT_EQ(8, length);  // Full "WVARCHAR", even though the buffer truncated.
+  EXPECT_EQ('W', buffer[0]);
+  EXPECT_EQ('V', buffer[1]);
+  EXPECT_EQ(0, buffer[2]);
+  EXPECT_EQ(0x5555, buffer[3]);
 }
