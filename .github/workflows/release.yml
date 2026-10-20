@@ -9,7 +9,7 @@ on:
       version:
         description: 'Version number (e.g., 1.0.0)'
         required: true
-        default: '1.0.0'
+        default: '1.0.1'
 
 env:
   VCPKG_COMMIT: '74e6536215718009aae747d86d84b78376bf9e09'
@@ -55,7 +55,7 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
           vcpkgDirectory: ${{ github.workspace }}/vcpkg
-          runVcpkgInstall: true
+          runVcpkgInstall: false
         env:
           VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
 
@@ -64,8 +64,19 @@ jobs:
         with:
           arch: x64
 
+      - name: Restore Windows dependency binaries
+        id: windows-vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .odbc-vcpkg-cache
+          key: ${{ runner.os }}-odbc-vcpkg-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-odbc-vcpkg-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+
       - name: Build Driver
+        env:
+          VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/.odbc-vcpkg-cache,readwrite'
         run: |
+          New-Item -ItemType Directory -Force -Path .odbc-vcpkg-cache | Out-Null
           cmake -B build_win64 `
             -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
@@ -79,7 +90,7 @@ jobs:
         run: |
           $env:PATH = "${{ github.workspace }}\build_win64\vcpkg_installed\x64-windows\bin;$env:PATH"
           cd build_win64
-          ctest --output-on-failure --timeout 120 --exclude-regex "logging_test"
+          ctest --output-on-failure --timeout 120 --no-tests=error --exclude-regex "logging_test"
 
       - name: Copy dependencies
         run: |
@@ -160,6 +171,31 @@ jobs:
           name: maxcompute-odbc-windows-x64-msi
           path: MaxCompute_ODBC_Driver_*.msi
 
+      - name: Save Windows dependency binaries
+        if: always() && steps.windows-vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .odbc-vcpkg-cache
+          key: ${{ steps.windows-vcpkg-cache.outputs.cache-primary-key }}
+
+      - name: Verify installed Windows package
+        shell: pwsh
+        run: |
+          $msi = (Resolve-Path "MaxCompute_ODBC_Driver_*.msi").Path
+          $installer = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait -PassThru
+          if ($installer.ExitCode -notin @(0, 3010)) { throw "MSI installation failed: $($installer.ExitCode)" }
+          python -m pip install --only-binary=:all: pyodbc
+          python -X faulthandler -u test/e2e/test_installed_driver.py
+          $consumerExit = $LASTEXITCODE
+          Write-Host "Installed consumer exit code: $consumerExit"
+          if ($consumerExit -ne 0) {
+            Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-5)} -ErrorAction SilentlyContinue |
+              Where-Object { $_.ProviderName -in @('Application Error', 'Windows Error Reporting') } |
+              Select-Object -First 3 TimeCreated, Id, Message | Format-List
+            exit 1
+          }
+
+
   build-macos:
     runs-on: macos-latest
     env:
@@ -184,7 +220,7 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
           vcpkgDirectory: ${{ github.workspace }}/vcpkg
-          runVcpkgInstall: true
+          runVcpkgInstall: false
         env:
           VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
 
@@ -197,10 +233,13 @@ jobs:
 
           cmake --build build --parallel
 
+      - name: Run unit tests
+        run: ctest --test-dir build --output-on-failure --timeout 120 --no-tests=error --exclude-regex "logging_test"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: maxcompute-odbc-macos-x64
+          name: maxcompute-odbc-macos-arm64
           path: build/lib/libmaxcompute_odbc.dylib
 
   build-linux:
@@ -228,7 +267,7 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
           vcpkgDirectory: ${{ github.workspace }}/vcpkg
-          runVcpkgInstall: true
+          runVcpkgInstall: false
         env:
           VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
 
@@ -244,7 +283,7 @@ jobs:
       - name: Run unit tests
         run: |
           cd build
-          ctest --output-on-failure --timeout 120 --exclude-regex "logging_test"
+          ctest --output-on-failure --timeout 120 --no-tests=error --exclude-regex "logging_test"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -258,6 +297,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -274,11 +316,11 @@ jobs:
           cd ../..
 
           # Windows MSI
-          cp artifacts/maxcompute-odbc-windows-x64-msi/*.msi "release/" 2>/dev/null || true
+          cp artifacts/maxcompute-odbc-windows-x64-msi/*.msi "release/"
 
           # macOS archive
-          cd artifacts/maxcompute-odbc-macos-x64
-          tar -czf "../../release/maxcompute-odbc-${VERSION}-macos-x64.tar.gz" *
+          cd artifacts/maxcompute-odbc-macos-arm64
+          tar -czf "../../release/maxcompute-odbc-${VERSION}-macos-arm64.tar.gz" *
           cd ../..
 
           # Linux archive
@@ -286,14 +328,19 @@ jobs:
           tar -czf "../../release/maxcompute-odbc-${VERSION}-linux-x64.tar.gz" *
           cd ../..
 
+          cd release
+          sha256sum *.msi *.zip *.tar.gz > SHA256SUMS
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: MaxCompute ODBC Driver ${{ needs.prepare.outputs.version }}
           files: release/*
           draft: false
           prerelease: false
           generate_release_notes: true
+          body_path: docs/releases/1.0.1.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

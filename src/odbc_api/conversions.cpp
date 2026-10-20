@@ -221,7 +221,7 @@ SQLRETURN convertAndWrite(const ColumnData &data,
             if (binding.indicator_ptr)
               *binding.indicator_ptr = static_cast<SQLLEN>(total_bytes);
 
-            MCO_LOG_DEBUG("format str {}", str_val);
+
             bool truncated =
                 out_size == 0 ? total_bytes > 0 : total_bytes > out_size - 1;
             return truncated ? SQL_SUCCESS_WITH_INFO : SQL_SUCCESS;

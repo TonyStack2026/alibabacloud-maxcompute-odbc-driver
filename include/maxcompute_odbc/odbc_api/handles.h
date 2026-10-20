@@ -4,6 +4,7 @@
 #include "maxcompute_odbc/odbc_api/column_fetch.h"
 #include "maxcompute_odbc/platform.h"  // Must include before sql.h on Windows
 #include <memory>
+#include <set>
 #include <sql.h>
 #include <sqlext.h>
 #include <string>
@@ -75,7 +76,7 @@ class ConnHandle : public OdbcHandle {
 
   Config &getConfigForUpdate() { return m_config; }
 
-  void setSDK(std::unique_ptr<MaxComputeClient> sdk) { m_sdk = std::move(sdk); }
+  void setSDK(std::unique_ptr<MaxComputeClient> sdk);
 
   MaxComputeClient *getSDK() const { return m_sdk.get(); }
 
@@ -165,6 +166,7 @@ class StmtHandle : public OdbcHandle {
     m_fetched_rows = 0;
     m_getdata_cursor.reset();
     m_segment_payload = SegmentPayload{};
+    m_logged_encoding_columns.clear();
   }
 
   // Same cleanup without a replacement stream (an empty statement, or
@@ -198,6 +200,9 @@ class StmtHandle : public OdbcHandle {
 
   // In StmtHandle.h, add these to the private section:
  private:
+  void logEncodingChoice(SQLUSMALLINT column, SQLSMALLINT target_type,
+                         const char* path);
+  std::set<std::pair<SQLUSMALLINT, SQLSMALLINT>> m_logged_encoding_columns;
   // Helper to match SQL LIKE patterns ('%' and '_')
   bool sqlLikeMatch(const std::string &str, const std::string &pattern);
 

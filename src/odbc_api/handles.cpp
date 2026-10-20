@@ -5,10 +5,36 @@
 
 namespace maxcompute_odbc {
 
+void ConnHandle::setSDK(std::unique_ptr<MaxComputeClient> sdk) {
+  m_sdk = std::move(sdk);
+  if (m_sdk) MCO_LOG_INFO("[ODBC-Encoding] {}", m_config.encodingDiagnostics());
+}
+
+void StmtHandle::logEncodingChoice(SQLUSMALLINT column, SQLSMALLINT target_type,
+                                   const char* path) {
+  if (target_type != SQL_C_CHAR && target_type != SQL_C_WCHAR &&
+      target_type != SQL_C_BINARY)
+    return;
+  if (!m_logged_encoding_columns.emplace(column, target_type).second) return;
+  const std::string charset =
+      m_parent_conn ? m_parent_conn->getConfigForUpdate().clientCharset
+                    : "UTF-8";
+  const char* type = target_type == SQL_C_CHAR    ? "SQL_C_CHAR"
+                     : target_type == SQL_C_WCHAR ? "SQL_C_WCHAR"
+                                                  : "SQL_C_BINARY";
+  const std::string encoding = target_type == SQL_C_CHAR    ? charset
+                               : target_type == SQL_C_WCHAR ? "UTF-16"
+                                                            : "raw-bytes";
+  MCO_LOG_INFO(
+      "[ODBC-Encoding] statement={} path={} column={} target_type={}({}) "
+      "encoding={}",
+      static_cast<const void*>(this), path, column, type, target_type,
+      encoding);
+}
+
 SQLRETURN ConnHandle::connect(const std::string &dsn, const std::string &user,
                               const std::string &pass) {
-  MCO_LOG_DEBUG("Attempting connection with input string: '{}' and user: '{}'",
-                dsn, user);
+  MCO_LOG_DEBUG("Attempting connection ({} input characters)", dsn.size());
 
   try {
     // 1. 约定：如果 dsn 含有 '='，视为完整连接字符串；
@@ -33,7 +59,7 @@ SQLRETURN ConnHandle::connect(const std::string &dsn, const std::string &user,
     }
 
     // 2. 解析连接字符串
-    MCO_LOG_DEBUG("Parsing connection string: '{}'", conn_str);
+    MCO_LOG_DEBUG("Parsing connection configuration");
     m_config = ConnectionStringParser::parse(conn_str);
 
     // 3. 覆盖用户/密码（如果上层通过 SQLConnect/SQLDriverConnect 传了
@@ -63,7 +89,7 @@ SQLRETURN ConnHandle::connect(const std::string &dsn, const std::string &user,
 
     // 6. 创建 SDK 客户端并建立连接
     MCO_LOG_DEBUG("Creating MaxCompute client with parsed configuration");
-    m_sdk = std::make_unique<MaxComputeClient>(m_config);
+    setSDK(std::make_unique<MaxComputeClient>(m_config));
 
     // 7. 如果启用了交互模式，调用 getConnection API 获取 MaxQA Session ID
     if (m_config.interactiveMode) {
@@ -91,7 +117,7 @@ SQLRETURN ConnHandle::connect(const std::string &dsn, const std::string &user,
 
     // 记录更多诊断信息（不包含敏感信息）
     MCO_LOG_ERROR("Connection configuration details:");
-    MCO_LOG_ERROR("  Input DSN/conn string: '{}'", dsn);
+    MCO_LOG_ERROR("  Input connection string length: {}", dsn.size());
     MCO_LOG_ERROR("  User: '{}'", user);
     MCO_LOG_ERROR("  Project: '{}'", m_config.project);
     MCO_LOG_ERROR("  Endpoint: '{}'", m_config.endpoint);
@@ -338,6 +364,8 @@ SQLRETURN StmtHandle::fetch() {
     }
 
     const auto &column_data = m_current_row->values[i];
+    logEncodingChoice(static_cast<SQLUSMALLINT>(i + 1), binding.target_type,
+                      "SQLBindCol");
     SQLRETURN conv_ret = convertAndWrite(column_data, binding, client_charset);
     if (conv_ret == SQL_ERROR) {
       // 转换本身失败: 这一行的数据不可信, 直接报错.
@@ -769,6 +797,7 @@ SQLRETURN StmtHandle::getData(SQLUSMALLINT col_num, SQLSMALLINT target_type,
 
   // ODBC列号从1开始，我们的vector索引从0开始
   const auto &column_data = m_current_row->values[col_num - 1];
+  logEncodingChoice(col_num, target_type, "SQLGetData");
 
   // 上一个调用已经把这个列的值全部交出去了: 按规范返回 SQL_NO_DATA, 长度清零.
   if (m_getdata_cursor.column == col_num && m_getdata_cursor.exhausted) {
@@ -777,7 +806,8 @@ SQLRETURN StmtHandle::getData(SQLUSMALLINT col_num, SQLSMALLINT target_type,
   }
 
   // Even a NULL read switches the active column. Returning early without
-  // updating the cursor would resume (or report exhaustion for) an older column.
+  // updating the cursor would resume (or report exhaustion for) an older
+  // column.
   if (m_getdata_cursor.column != col_num) {
     m_getdata_cursor.reset();
     m_getdata_cursor.column = col_num;

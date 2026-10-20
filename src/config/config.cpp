@@ -1,12 +1,14 @@
 #include "maxcompute_odbc/common/logging.h"
 #include "maxcompute_odbc/common/utils.h"
 #include "maxcompute_odbc/config/config.h"
+#include "maxcompute_odbc/version.h"
 #include <algorithm>
 #include <cctype>
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 namespace maxcompute_odbc {
 void Config::validate() const {
@@ -96,108 +98,127 @@ static std::string toLower(std::string str) {
   return str;
 }
 
+// ODBC values may be bare, double quoted, or enclosed in braces. Keep the
+// ordered attributes so duplicate keys retain their existing last-value wins
+// behavior in both configuration entry points.
+static std::vector<std::pair<std::string, std::string>> parseAttributes(
+    const std::string& input) {
+  std::vector<std::pair<std::string, std::string>> attributes;
+  size_t pos = 0;
+  while (pos < input.size()) {
+    while (pos < input.size() &&
+           (input[pos] == ';' ||
+            std::isspace(static_cast<unsigned char>(input[pos]))))
+      ++pos;
+    if (pos == input.size()) break;
+    const size_t equals = input.find('=', pos);
+    const size_t separator = input.find(';', pos);
+    if (equals == std::string::npos ||
+        (separator != std::string::npos && separator < equals)) {
+      throw std::invalid_argument("Invalid connection string attribute");
+    }
+    const std::string key = trim(input.substr(pos, equals - pos));
+    if (key.empty()) throw std::invalid_argument("Empty connection string key");
+    pos = equals + 1;
+    while (pos < input.size() &&
+           std::isspace(static_cast<unsigned char>(input[pos])))
+      ++pos;
+    std::string value;
+    // Preserve the driver's existing unquoted JSON GlobalSettings syntax.
+    size_t json_start = pos + 1;
+    while (json_start < input.size() &&
+           std::isspace(static_cast<unsigned char>(input[json_start])))
+      ++json_start;
+    const bool raw_json =
+        toLower(key) == "globalsettings" && pos < input.size() &&
+        input[pos] == '{' && json_start < input.size() &&
+        (input[json_start] == '"' || input[json_start] == '}');
+    if (pos < input.size() &&
+        (input[pos] == '"' || (input[pos] == '{' && !raw_json))) {
+      const bool braced = input[pos++] == '{';
+      const char closing = braced ? '}' : '"';
+      bool closed = false;
+      while (pos < input.size()) {
+        const char c = input[pos++];
+        if (!braced && c == '\\' && pos < input.size() && input[pos] == '"') {
+          value += input[pos++];
+        } else if (c == closing) {
+          if (pos < input.size() && input[pos] == closing) {
+            value += input[pos++];
+          } else {
+            closed = true;
+            break;
+          }
+        } else {
+          value += c;
+        }
+      }
+      if (!closed)
+        throw std::invalid_argument("Unclosed connection string value");
+      while (pos < input.size() &&
+             std::isspace(static_cast<unsigned char>(input[pos])))
+        ++pos;
+      if (pos < input.size() && input[pos] != ';') {
+        throw std::invalid_argument(
+            "Unexpected text after connection string value");
+      }
+      if (pos < input.size()) ++pos;
+    } else {
+      const size_t end = input.find(';', pos);
+      value =
+          trim(input.substr(pos, end == std::string::npos ? end : end - pos));
+      pos = end == std::string::npos ? input.size() : end + 1;
+    }
+    attributes.emplace_back(key, std::move(value));
+  }
+  return attributes;
+}
+
+static std::string escapeConnectionValue(const std::string& value) {
+  if (value.find_first_of(";{}\"\r\n") == std::string::npos &&
+      value == trim(value))
+    return value;
+  std::string escaped = "{";
+  for (char c : value) {
+    escaped += c;
+    if (c == '}') escaped += '}';
+  }
+  return escaped + "}";
+}
+
+std::string Config::buildOutputConnectionString() const {
+  // The completed string intentionally excludes passwords and security tokens.
+  std::string output = "DRIVER={MaxCompute ODBC Driver};SERVER=" +
+                       escapeConnectionValue(endpoint) +
+                       ";PROJECT=" + escapeConnectionValue(project);
+  if (accessKeyId) output += ";UID=" + escapeConnectionValue(*accessKeyId);
+  output += ";ClientCharset=" + escapeConnectionValue(clientCharset) + ";";
+  return output;
+}
+
+std::string Config::encodingDiagnostics() const {
+  return std::string("driver=") + kDriverVersion +
+         "; ClientCharset=" + clientCharset + "; source=" +
+         (clientCharsetSpecified ? "connection-string" : "default") +
+         "; Unicode=UTF-16";
+}
+
 std::map<std::string, std::string>
 ConnectionStringParser::parseDriverConnectString(const std::string &conn_str) {
   std::map<std::string, std::string> params;
-  std::string current_pair;
-  size_t start = 0;
-  size_t end;
-
-  while ((end = conn_str.find(';', start)) != std::string::npos) {
-    current_pair = conn_str.substr(start, end - start);
-    size_t eq_pos = current_pair.find('=');
-    if (eq_pos != std::string::npos) {
-      std::string key = current_pair.substr(0, eq_pos);
-      // Key 转换为大写，使其不区分大小写
-      std::transform(key.begin(), key.end(), key.begin(), ::toupper);
-      params[key] = current_pair.substr(eq_pos + 1);
-    }
-    start = end + 1;
-  }
-  // 处理最后一个键值对
-  if (start < conn_str.length()) {
-    current_pair = conn_str.substr(start);
-    size_t eq_pos = current_pair.find('=');
-    if (eq_pos != std::string::npos) {
-      std::string key = current_pair.substr(0, eq_pos);
-      std::transform(key.begin(), key.end(), key.begin(), ::toupper);
-      params[key] = current_pair.substr(eq_pos + 1);
-    }
+  for (const auto& [key, value] : parseAttributes(conn_str)) {
+    std::string upper = key;
+    std::transform(upper.begin(), upper.end(), upper.begin(),
+                   [](unsigned char c) { return std::toupper(c); });
+    params[upper] = value;
   }
   return params;
 }
 
 Config ConnectionStringParser::parse(const std::string &connStr) {
-  MCO_LOG_INFO("DEBUG: {}", connStr);
-
   Config config;
-  size_t start = 0;
-
-  while (start < connStr.length()) {
-    // 跳过空白字符
-    while (start < connStr.length() && connStr[start] == ' ') {
-      start++;
-    }
-    if (start >= connStr.length()) break;
-
-    // 查找键
-    size_t eqPos = connStr.find('=', start);
-    if (eqPos == std::string::npos) break;
-
-    std::string key = trim(connStr.substr(start, eqPos - start));
-    std::string lowerKey = toLower(key);
-
-    // 查找值
-    size_t value_start = eqPos + 1;
-    std::string value;
-
-    // 检查值是否以双引号开头
-    if (value_start < connStr.length() && connStr[value_start] == '"') {
-      // 处理双引号包裹的值
-      size_t quote_end = value_start + 1;
-      while (quote_end < connStr.length() && connStr[quote_end] != '"') {
-        // 处理转义的双引号 \"
-        if (connStr[quote_end] == '\\' && quote_end + 1 < connStr.length() &&
-            connStr[quote_end + 1] == '"') {
-          quote_end += 2;
-        } else {
-          quote_end++;
-        }
-      }
-      if (quote_end < connStr.length() && connStr[quote_end] == '"') {
-        // 去掉外层的双引号，并处理转义字符
-        std::string raw_value =
-            connStr.substr(value_start + 1, quote_end - value_start - 1);
-        for (size_t i = 0; i < raw_value.length(); ++i) {
-          if (raw_value[i] == '\\' && i + 1 < raw_value.length() &&
-              raw_value[i + 1] == '"') {
-            value += '"';
-            i++;
-          } else {
-            value += raw_value[i];
-          }
-        }
-        start = quote_end + 1;
-      } else {
-        // 双引号不匹配，使用原始值
-        value = connStr.substr(value_start);
-        start = connStr.length();
-      }
-    } else {
-      // 查找下一个分号
-      size_t semicolon_pos = connStr.find(';', value_start);
-      if (semicolon_pos == std::string::npos) {
-        value = connStr.substr(value_start);
-        start = connStr.length();
-      } else {
-        value = connStr.substr(value_start, semicolon_pos - value_start);
-        start = semicolon_pos + 1;
-      }
-    }
-
-    // 去除值两端的空白字符
-    value = trim(value);
-
+  for (const auto& [key, value] : parseAttributes(connStr)) {
+    const std::string lowerKey = toLower(key);
     if (lowerKey == "endpoint" || lowerKey == "server") {
       config.endpoint = value;
     } else if (lowerKey == "project") {
@@ -265,11 +286,12 @@ Config ConnectionStringParser::parse(const std::string &connStr) {
       config.namespaceSchema = value != "false";
     } else if (lowerKey == "clientcharset") {
       if (!value.empty()) {
-        std::string normalized = value;
+        std::string normalized = trim(value);
         std::transform(normalized.begin(), normalized.end(), normalized.begin(),
                        [](unsigned char c) { return std::toupper(c); });
         if (normalized == "UTF8") normalized = "UTF-8";
         config.clientCharset = normalized;
+        config.clientCharsetSpecified = true;
       }
     } else if (lowerKey == "fetchresultsplitsize") {
       try {
@@ -331,73 +353,8 @@ Config ConnectionStringParser::parse(const std::string &connStr) {
 
 void ConnectionStringParser::updateConfig(const std::string &connStr,
                                           Config &config) {
-  size_t start = 0;
-
-  while (start < connStr.length()) {
-    // 跳过空白字符
-    while (start < connStr.length() && connStr[start] == ' ') {
-      start++;
-    }
-    if (start >= connStr.length()) break;
-
-    // 查找键
-    size_t eqPos = connStr.find('=', start);
-    if (eqPos == std::string::npos) break;
-
-    std::string key = trim(connStr.substr(start, eqPos - start));
-    std::string lowerKey = toLower(key);
-
-    // 查找值
-    size_t value_start = eqPos + 1;
-    std::string value;
-
-    // 检查值是否以双引号开头
-    if (value_start < connStr.length() && connStr[value_start] == '"') {
-      // 处理双引号包裹的值
-      size_t quote_end = value_start + 1;
-      while (quote_end < connStr.length() && connStr[quote_end] != '"') {
-        // 处理转义的双引号 \"
-        if (connStr[quote_end] == '\\' && quote_end + 1 < connStr.length() &&
-            connStr[quote_end + 1] == '"') {
-          quote_end += 2;
-        } else {
-          quote_end++;
-        }
-      }
-      if (quote_end < connStr.length() && connStr[quote_end] == '"') {
-        // 去掉外层的双引号，并处理转义字符
-        std::string raw_value =
-            connStr.substr(value_start + 1, quote_end - value_start - 1);
-        for (size_t i = 0; i < raw_value.length(); ++i) {
-          if (raw_value[i] == '\\' && i + 1 < raw_value.length() &&
-              raw_value[i + 1] == '"') {
-            value += '"';
-            i++;
-          } else {
-            value += raw_value[i];
-          }
-        }
-        start = quote_end + 1;
-      } else {
-        // 双引号不匹配，使用原始值
-        value = connStr.substr(value_start);
-        start = connStr.length();
-      }
-    } else {
-      // 查找下一个分号
-      size_t semicolon_pos = connStr.find(';', value_start);
-      if (semicolon_pos == std::string::npos) {
-        value = connStr.substr(value_start);
-        start = connStr.length();
-      } else {
-        value = connStr.substr(value_start, semicolon_pos - value_start);
-        start = semicolon_pos + 1;
-      }
-    }
-
-    // 去除值两端的空白字符
-    value = trim(value);
-
+  for (const auto& [key, value] : parseAttributes(connStr)) {
+    const std::string lowerKey = toLower(key);
     if (lowerKey == "endpoint" || lowerKey == "server") {
       config.endpoint = value;
     } else if (lowerKey == "project") {
@@ -457,11 +414,12 @@ void ConnectionStringParser::updateConfig(const std::string &connStr,
       config.namespaceSchema = value != "false";
     } else if (lowerKey == "clientcharset") {
       if (!value.empty()) {
-        std::string normalized = value;
+        std::string normalized = trim(value);
         std::transform(normalized.begin(), normalized.end(), normalized.begin(),
                        [](unsigned char c) { return std::toupper(c); });
         if (normalized == "UTF8") normalized = "UTF-8";
         config.clientCharset = normalized;
+        config.clientCharsetSpecified = true;
       }
     } else if (lowerKey == "fetchresultsplitsize") {
       config.fetchResultSplitSize = std::stoll(value);

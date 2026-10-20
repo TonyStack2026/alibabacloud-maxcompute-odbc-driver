@@ -7,6 +7,11 @@
 #include <sqlucode.h>
 
 // Function declarations for ODBC API entry points
+SQLRETURN SQL_API SQLGetFunctions(SQLHDBC ConnectionHandle,
+                                  SQLUSMALLINT FunctionId,
+                                  SQLUSMALLINT* SupportedPtr);
+SQLRETURN SQL_API SQLGetTypeInfo(SQLHSTMT StatementHandle, SQLSMALLINT DataType);
+SQLRETURN SQL_API SQLGetTypeInfoW(SQLHSTMT StatementHandle, SQLSMALLINT DataType);
 
 // Handle Management Functions
 SQLRETURN SQL_API SQLAllocEnv(SQLHENV* EnvironmentHandle);
@@ -26,6 +31,10 @@ SQLRETURN SQL_API SQLConnect(SQLHDBC ConnectionHandle, SQLCHAR* ServerName,
                              SQLSMALLINT NameLength1, SQLCHAR* UserName,
                              SQLSMALLINT NameLength2, SQLCHAR* Authentication,
                              SQLSMALLINT NameLength3);
+SQLRETURN SQL_API SQLConnectW(SQLHDBC ConnectionHandle, SQLWCHAR* ServerName,
+                              SQLSMALLINT NameLength1, SQLWCHAR* UserName,
+                              SQLSMALLINT NameLength2, SQLWCHAR* Authentication,
+                              SQLSMALLINT NameLength3);
 SQLRETURN SQL_API SQLDriverConnect(
     SQLHDBC hDbc, SQLHWND hwndParent, SQLCHAR* szConnStrIn,
     SQLSMALLINT cbConnStrIn, SQLCHAR* szConnStrOut, SQLSMALLINT cbConnStrOutMax,
@@ -133,6 +142,9 @@ SQLRETURN SQL_API SQLSetEnvAttr(SQLHENV EnvironmentHandle, SQLINTEGER Attribute,
 SQLRETURN SQL_API SQLGetStmtAttr(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
                                  SQLPOINTER Value, SQLINTEGER BufferLength,
                                  SQLINTEGER* StringLength);
+SQLRETURN SQL_API SQLGetStmtAttrW(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
+                                  SQLPOINTER Value, SQLINTEGER BufferLength,
+                                  SQLINTEGER* StringLength);
 SQLRETURN SQL_API SQLSetStmtAttr(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
                                  SQLPOINTER ValuePtr, SQLINTEGER StringLength);
 SQLRETURN SQL_API SQLSetStmtAttrW(SQLHSTMT StatementHandle,

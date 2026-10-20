@@ -1,6 +1,8 @@
 #include "maxcompute_odbc/common/logging.h"
 #include "maxcompute_odbc/common/utils.h"
 #include "maxcompute_odbc/odbc_api/entry_points.h"
+#include "maxcompute_odbc/odbc_api/encoding.h"
+#include <limits>
 #include "maxcompute_odbc/odbc_api/handle_registry.h"
 #include "maxcompute_odbc/odbc_api/handles.h"
 #include <cstring>      // for strlen, strcmp, memcpy
@@ -66,8 +68,8 @@ SQLRETURN GetInfoImpl(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
           return L"maxcompute_odbc.dll";
         else if (strcmp(ansi_str, "MaxCompute") == 0)
           return L"MaxCompute";
-        else if (strcmp(ansi_str, "1.0.0") == 0)
-          return L"1.0.0";
+        else if (strcmp(ansi_str, "1.0.1") == 0)
+          return L"1.0.1";
         else if (strcmp(ansi_str, "1.0") == 0)
           return L"1.0";
         else if (strcmp(ansi_str, "03.80") == 0)
@@ -122,7 +124,7 @@ SQLRETURN GetInfoImpl(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
       }
       case SQL_DRIVER_VER: {
         // 驱动程序版本 (这里用示例版本号)
-        const CharType *driver_ver = get_string_literal("1.0.0");
+        const CharType *driver_ver = get_string_literal("1.0.1");
         size_t len = std::char_traits<CharType>::length(driver_ver);
         if (InfoValuePtr && BufferLength > 0) {
           if constexpr (std::is_same_v<CharType, char>) {
@@ -1234,6 +1236,20 @@ SQLRETURN SQL_API SQLConnect(SQLHDBC ConnectionHandle, SQLCHAR *ServerName,
                        OdbcStringToStdString(Authentication, NameLength3));
 }
 
+// Windows identifies Unicode drivers by this export, even for applications
+// that connect through SQLDriverConnectW rather than SQLConnectW.
+SQLRETURN SQL_API SQLConnectW(SQLHDBC ConnectionHandle, SQLWCHAR *ServerName,
+                              SQLSMALLINT NameLength1, SQLWCHAR *UserName,
+                              SQLSMALLINT NameLength2, SQLWCHAR *Authentication,
+                              SQLSMALLINT NameLength3) {
+  auto *conn = maxcompute_odbc::HandleRegistry::instance()
+                   .get<maxcompute_odbc::ConnHandle>(ConnectionHandle);
+  if (!conn) return SQL_INVALID_HANDLE;
+  return conn->connect(OdbcWStringToStdString(ServerName, NameLength1),
+                       OdbcWStringToStdString(UserName, NameLength2),
+                       OdbcWStringToStdString(Authentication, NameLength3));
+}
+
 // SQLDisconnect is an old ODBC 2.x function for disconnecting from a data
 // source
 SQLRETURN SQL_API SQLDisconnect(SQLHDBC ConnectionHandle) {
@@ -1692,31 +1708,21 @@ SQLRETURN SQL_API SQLDriverConnect(
     MCO_LOG_INFO("Successfully connected to MaxCompute project '{}' at '{}'.",
                  config.project, config.endpoint);
 
-    // 7. 构建并写回输出连接字符串 (不包含密码)
-    if (szConnStrOut && cbConnStrOutMax > 0) {
-      MCO_LOG_DEBUG("Building output connection string");
-      std::string outStr =
-          "DRIVER={MaxCompute ODBC Driver};SERVER=" + config.endpoint +
-          ";PROJECT=" + config.project + ";UID=" + config.accessKeyId.value() +
-          ";";
-
-      size_t len_to_copy =
-          outStr.length() < static_cast<size_t>(cbConnStrOutMax - 1)
-              ? outStr.length()
-              : static_cast<size_t>(cbConnStrOutMax - 1);
-      memcpy(szConnStrOut, outStr.c_str(), len_to_copy);
-      szConnStrOut[len_to_copy] = '\0';
-
-      if (pcbConnStrOut) {
-        *pcbConnStrOut = static_cast<SQLSMALLINT>(outStr.length());
-        if (outStr.length() > len_to_copy) {
-          // 如果缓冲区不够大，需要返回 SQL_SUCCESS_WITH_INFO
-          MCO_LOG_WARNING(
-              "Connection string buffer too small, connection string "
-              "truncated.");
-          pConn->addDiagRecord({0, "01004", "String data, right truncated."});
-          return SQL_SUCCESS_WITH_INFO;
-        }
+    // 7. ANSI output lengths are bytes, including length-only calls.
+    const auto completed = config.buildOutputConnectionString();
+    if (cbConnStrOutMax < 0 ||
+        completed.size() > static_cast<size_t>(std::numeric_limits<SQLSMALLINT>::max())) {
+      pConn->addDiagRecord({0, "HY090", "Invalid connection string buffer length"});
+      return SQL_ERROR;
+    }
+    if (pcbConnStrOut) *pcbConnStrOut = static_cast<SQLSMALLINT>(completed.size());
+    if (szConnStrOut) {
+      const size_t capacity = static_cast<size_t>(cbConnStrOutMax);
+      maxcompute_odbc::encoding::WriteUtf8AsCharset(
+          completed, "UTF-8", reinterpret_cast<char *>(szConnStrOut), capacity);
+      if (completed.size() >= capacity) {
+        pConn->addDiagRecord({0, "01004", "String data, right truncated."});
+        return SQL_SUCCESS_WITH_INFO;
       }
     }
 
@@ -1908,31 +1914,21 @@ SQLRETURN SQL_API SQLDriverConnectA(
     MCO_LOG_INFO("Successfully connected to MaxCompute project '{}' at '{}'.",
                  config.project, config.endpoint);
 
-    // 7. 构建并写回输出连接字符串 (不包含密码)
-    if (szConnStrOut && cbConnStrOutMax > 0) {
-      MCO_LOG_DEBUG("Building output connection string (ANSI)");
-      std::string outStr =
-          "DRIVER={MaxCompute ODBC Driver};SERVER=" + config.endpoint +
-          ";PROJECT=" + config.project + ";UID=" + config.accessKeyId.value() +
-          ";";
-
-      size_t len_to_copy =
-          outStr.length() < static_cast<size_t>(cbConnStrOutMax - 1)
-              ? outStr.length()
-              : static_cast<size_t>(cbConnStrOutMax - 1);
-      memcpy(szConnStrOut, outStr.c_str(), len_to_copy);
-      szConnStrOut[len_to_copy] = '\0';
-
-      if (pcbConnStrOut) {
-        *pcbConnStrOut = static_cast<SQLSMALLINT>(outStr.length());
-        if (outStr.length() > len_to_copy) {
-          // 如果缓冲区不够大，需要返回 SQL_SUCCESS_WITH_INFO
-          MCO_LOG_WARNING(
-              "Connection string buffer too small, connection string "
-              "truncated in SQLDriverConnectA.");
-          pConn->addDiagRecord({0, "01004", "String data, right truncated."});
-          return SQL_SUCCESS_WITH_INFO;
-        }
+    // 7. ANSI output lengths are bytes, including length-only calls.
+    const auto completed = config.buildOutputConnectionString();
+    if (cbConnStrOutMax < 0 ||
+        completed.size() > static_cast<size_t>(std::numeric_limits<SQLSMALLINT>::max())) {
+      pConn->addDiagRecord({0, "HY090", "Invalid connection string buffer length"});
+      return SQL_ERROR;
+    }
+    if (pcbConnStrOut) *pcbConnStrOut = static_cast<SQLSMALLINT>(completed.size());
+    if (szConnStrOut) {
+      const size_t capacity = static_cast<size_t>(cbConnStrOutMax);
+      maxcompute_odbc::encoding::WriteUtf8AsCharset(
+          completed, "UTF-8", reinterpret_cast<char *>(szConnStrOut), capacity);
+      if (completed.size() >= capacity) {
+        pConn->addDiagRecord({0, "01004", "String data, right truncated."});
+        return SQL_SUCCESS_WITH_INFO;
       }
     }
 
@@ -2000,8 +1996,7 @@ SQLRETURN SQL_API SQLDriverConnectW(SQLHDBC hDbc, SQLHWND hwndParent,
   MCO_LOG_DEBUG("SQLDriverConnectW: cbConnStrIn={}, szConnStrIn={}",
                 cbConnStrIn, szConnStrIn ? "non-null" : "null");
   std::string connStrIn = OdbcWStringToStdString(szConnStrIn, cbConnStrIn);
-  MCO_LOG_DEBUG("Parsed connection string ({} chars): {}", connStrIn.length(),
-                connStrIn);
+  MCO_LOG_DEBUG("Parsed connection string ({} characters)", connStrIn.length());
   auto &config =
       pConn->getConfigForUpdate();  // 假设有这么一个获取配置引用的方法
 
@@ -2128,24 +2123,24 @@ SQLRETURN SQL_API SQLDriverConnectW(SQLHDBC hDbc, SQLHWND hwndParent,
     MCO_LOG_INFO("Successfully connected to MaxCompute project '{}' at '{}'.",
                  config.project, config.endpoint);
 
-    // 7. 构建并写回输出连接字符串 (不包含密码)
-    if (szConnStrOut && cbConnStrOutMax > 0) {
-      MCO_LOG_DEBUG("Building output connection string (Wide)");
-      std::string outStr =
-          "DRIVER={MaxCompute ODBC Driver};SERVER=" + config.endpoint +
-          ";PROJECT=" + config.project + ";UID=" + config.accessKeyId.value() +
-          ";";
-
-      // Convert the output string to wide character format
-      StdStringToOdbcWString(outStr, szConnStrOut, cbConnStrOutMax,
-                             pcbConnStrOut);
-
-      // Check if the output was truncated
-      if (pcbConnStrOut && outStr.length() > (cbConnStrOutMax - 1)) {
-        // 如果缓冲区不够大，需要返回 SQL_SUCCESS_WITH_INFO
-        MCO_LOG_WARNING(
-            "Connection string buffer too small, connection string "
-            "truncated in SQLDriverConnectW.");
+    // 7. SQLDriverConnectW lengths and capacities are UTF-16 characters.
+    const auto completed = maxcompute_odbc::encoding::Utf16FromUtf8(
+        config.buildOutputConnectionString());
+    if (cbConnStrOutMax < 0 ||
+        completed.size() > static_cast<size_t>(std::numeric_limits<SQLSMALLINT>::max())) {
+      pConn->addDiagRecord({0, "HY090", "Invalid connection string buffer length"});
+      return SQL_ERROR;
+    }
+    if (pcbConnStrOut) *pcbConnStrOut = static_cast<SQLSMALLINT>(completed.size());
+    if (szConnStrOut) {
+      const size_t capacity = static_cast<size_t>(cbConnStrOutMax);
+      size_t copied = capacity ? std::min(completed.size(), capacity - 1) : 0;
+      if (copied && copied < completed.size() && completed[copied - 1] >= 0xd800 &&
+          completed[copied - 1] <= 0xdbff)
+        --copied;
+      std::copy_n(completed.begin(), copied, szConnStrOut);
+      if (capacity) szConnStrOut[copied] = 0;
+      if (copied < completed.size()) {
         pConn->addDiagRecord({0, "01004", "String data, right truncated."});
         return SQL_SUCCESS_WITH_INFO;
       }
@@ -3120,7 +3115,7 @@ SQLRETURN SQL_API SQLSetEnvAttr(SQLHENV EnvironmentHandle, SQLINTEGER Attribute,
 }
 
 // SQLGetStmtAttr function for retrieving statement attributes
-SQLRETURN SQL_API SQLGetStmtAttr(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
+static SQLRETURN GetStatementAttribute(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
                                  SQLPOINTER ValuePtr, SQLINTEGER BufferLength,
                                  SQLINTEGER *StringLengthPtr) {
   MCO_LOG_DEBUG("SQLGetStmtAttr called with stmt handle: {}, attribute: {}",
@@ -3565,6 +3560,22 @@ SQLRETURN SQL_API SQLSetStmtAttrW(SQLHSTMT StatementHandle,
   }
 }
 
+SQLRETURN SQL_API SQLGetStmtAttr(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
+                                 SQLPOINTER ValuePtr, SQLINTEGER BufferLength,
+                                 SQLINTEGER *StringLengthPtr) {
+  return GetStatementAttribute(StatementHandle, Attribute, ValuePtr, BufferLength,
+                                StringLengthPtr);
+}
+
+// Standard statement attributes are numeric values or pointers. Both entry
+// points use the same implementation, including unsupported-attribute errors.
+SQLRETURN SQL_API SQLGetStmtAttrW(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
+                                  SQLPOINTER ValuePtr, SQLINTEGER BufferLength,
+                                  SQLINTEGER *StringLengthPtr) {
+  return GetStatementAttribute(StatementHandle, Attribute, ValuePtr, BufferLength,
+                                StringLengthPtr);
+}
+
 // SQLSetStmtAttr function for setting statement attributes
 SQLRETURN SQL_API SQLSetStmtAttr(SQLHSTMT StatementHandle, SQLINTEGER Attribute,
                                  SQLPOINTER ValuePtr, SQLINTEGER StringLength) {
@@ -3729,8 +3740,161 @@ SQLRETURN SQL_API SQLGetInfo(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
 SQLRETURN SQL_API SQLGetInfoW(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
                               SQLPOINTER InfoValuePtr, SQLSMALLINT BufferLength,
                               SQLSMALLINT *StringLengthPtr) {
-  return GetInfoImpl<char>(ConnectionHandle, InfoType, InfoValuePtr,
-                           BufferLength, StringLengthPtr);
+  // Numeric attributes retain the ANSI implementation's native ODBC types.
+  // String attributes must return SQLWCHAR (UTF-16), never ANSI bytes or the
+  // platform's wchar_t, which is 32 bits on Unix.
+  switch (InfoType) {
+    case SQL_DRIVER_NAME:
+    case SQL_DRIVER_VER:
+    case SQL_DATA_SOURCE_NAME:
+    case SQL_DATABASE_NAME:
+    case SQL_DBMS_NAME:
+    case SQL_DBMS_VER:
+    case SQL_DRIVER_ODBC_VER:
+    case SQL_ODBC_VER:
+    case SQL_IDENTIFIER_QUOTE_CHAR:
+    case SQL_KEYWORDS:
+    case SQL_CATALOG_TERM:
+    case SQL_PROCEDURE_TERM:
+    case SQL_SCHEMA_TERM:
+    case SQL_CATALOG_NAME_SEPARATOR:
+      break;
+    default:
+      return GetInfoImpl<char>(ConnectionHandle, InfoType, InfoValuePtr,
+                               BufferLength, StringLengthPtr);
+  }
+  auto *connection = maxcompute_odbc::HandleRegistry::instance()
+                         .get<maxcompute_odbc::ConnHandle>(ConnectionHandle);
+  if (!connection) return SQL_INVALID_HANDLE;
+  if (BufferLength < 0) {
+    connection->addDiagRecord({0, "HY090", "Invalid string or buffer length"});
+    return SQL_ERROR;
+  }
+  try {
+    char dummy = 0;
+    SQLSMALLINT utf8_length = 0;
+    auto result = GetInfoImpl<char>(ConnectionHandle, InfoType, &dummy, 0,
+                                    &utf8_length);
+    if (!SQL_SUCCEEDED(result)) return result;
+    if (utf8_length < 0 ||
+        utf8_length == std::numeric_limits<SQLSMALLINT>::max()) {
+      connection->addDiagRecord({0, "HY090", "Metadata string is too long"});
+      return SQL_ERROR;
+    }
+    std::vector<char> utf8(static_cast<size_t>(utf8_length) + 1);
+    result = GetInfoImpl<char>(ConnectionHandle, InfoType, utf8.data(),
+                              static_cast<SQLSMALLINT>(utf8.size()), nullptr);
+    if (!SQL_SUCCEEDED(result)) return result;
+    const auto units = maxcompute_odbc::encoding::Utf16FromUtf8(
+        std::string(utf8.data(), static_cast<size_t>(utf8_length)));
+    const size_t bytes = units.size() * sizeof(SQLWCHAR);
+    if (bytes > static_cast<size_t>(std::numeric_limits<SQLSMALLINT>::max())) {
+      connection->addDiagRecord({0, "HY090", "Metadata string is too long"});
+      return SQL_ERROR;
+    }
+    if (StringLengthPtr) *StringLengthPtr = static_cast<SQLSMALLINT>(bytes);
+    if (!InfoValuePtr) return SQL_SUCCESS;
+    const size_t capacity = static_cast<size_t>(BufferLength) / sizeof(SQLWCHAR);
+    size_t copied = capacity ? std::min(units.size(), capacity - 1) : 0;
+    if (copied && copied < units.size() && units[copied - 1] >= 0xd800 &&
+        units[copied - 1] <= 0xdbff)
+      --copied;
+    auto *output = static_cast<SQLWCHAR *>(InfoValuePtr);
+    std::copy_n(units.begin(), copied, output);
+    if (capacity) output[copied] = 0;
+    if (copied < units.size()) {
+      connection->addDiagRecord({0, "01004", "String data, right truncated."});
+      return SQL_SUCCESS_WITH_INFO;
+    }
+    return SQL_SUCCESS;
+  } catch (const std::exception &) {
+    connection->addDiagRecord({0, "HY000", "Unable to encode metadata string"});
+    return SQL_ERROR;
+  }
+}
+
+// Windows dispatches the Unicode type-info callback even when capability
+// discovery reports it unsupported. Return the usual IM001 diagnostic rather
+// than leaving a missing callback that can cause a native access violation.
+static SQLRETURN UnsupportedTypeInformation(SQLHSTMT StatementHandle, SQLSMALLINT DataType) {
+  MCO_LOG_DEBUG("SQLGetTypeInfo requested type {}", DataType);
+  auto *statement = maxcompute_odbc::HandleRegistry::instance()
+                        .get<maxcompute_odbc::StmtHandle>(StatementHandle);
+  if (!statement) return SQL_INVALID_HANDLE;
+  statement->clearDiagRecords();
+  statement->addDiagRecord({0, "IM001", "Type information is not supported by this driver"});
+  return SQL_ERROR;
+}
+
+SQLRETURN SQL_API SQLGetTypeInfo(SQLHSTMT StatementHandle, SQLSMALLINT DataType) {
+  return UnsupportedTypeInformation(StatementHandle, DataType);
+}
+
+SQLRETURN SQL_API SQLGetTypeInfoW(SQLHSTMT StatementHandle, SQLSMALLINT DataType) {
+  return UnsupportedTypeInformation(StatementHandle, DataType);
+}
+
+// Advertise only supported operations. Compatibility error entry points such
+// as SQLGetTypeInfo deliberately remain absent from the capability arrays.
+SQLRETURN SQL_API SQLGetFunctions(SQLHDBC ConnectionHandle,
+                                  SQLUSMALLINT FunctionId,
+                                  SQLUSMALLINT *SupportedPtr) {
+  MCO_LOG_DEBUG("SQLGetFunctions requested function {}", FunctionId);
+  auto *connection = maxcompute_odbc::HandleRegistry::instance()
+                         .get<maxcompute_odbc::ConnHandle>(ConnectionHandle);
+  if (!connection) return SQL_INVALID_HANDLE;
+  if (!SupportedPtr) {
+    connection->addDiagRecord({0, "HY009", "Invalid use of null pointer"});
+    return SQL_ERROR;
+  }
+  constexpr SQLUSMALLINT functions[] = {
+    SQL_API_SQLALLOCENV,
+    SQL_API_SQLFREEENV,
+    SQL_API_SQLALLOCCONNECT,
+    SQL_API_SQLFREECONNECT,
+    SQL_API_SQLALLOCSTMT,
+    SQL_API_SQLFREESTMT,
+    SQL_API_SQLALLOCHANDLE,
+    SQL_API_SQLFREEHANDLE,
+    SQL_API_SQLCONNECT,
+    SQL_API_SQLDISCONNECT,
+    SQL_API_SQLDRIVERCONNECT,
+    SQL_API_SQLEXECDIRECT,
+    SQL_API_SQLPREPARE,
+    SQL_API_SQLEXECUTE,
+    SQL_API_SQLFETCH,
+    SQL_API_SQLBINDCOL,
+    SQL_API_SQLNUMRESULTCOLS,
+    SQL_API_SQLDESCRIBECOL,
+    SQL_API_SQLROWCOUNT,
+    SQL_API_SQLCOLATTRIBUTE,
+    SQL_API_SQLGETDATA,
+    SQL_API_SQLTABLES,
+    SQL_API_SQLCOLUMNS,
+    SQL_API_SQLGETDIAGREC,
+    SQL_API_SQLGETDIAGFIELD,
+    SQL_API_SQLSETENVATTR,
+    SQL_API_SQLGETSTMTATTR,
+    SQL_API_SQLGETINFO,
+    SQL_API_SQLGETFUNCTIONS,
+    SQL_API_SQLGETCONNECTATTR,
+    SQL_API_SQLSETCONNECTATTR,
+    SQL_API_SQLSETSTMTATTR,
+    SQL_API_SQLMORERESULTS
+  };
+  if (FunctionId == SQL_API_ODBC3_ALL_FUNCTIONS) {
+    std::fill_n(SupportedPtr, SQL_API_ODBC3_ALL_FUNCTIONS_SIZE, SQL_FALSE);
+    for (const auto function : functions)
+      SupportedPtr[function >> 4] |= static_cast<SQLUSMALLINT>(1U << (function & 15));
+  } else if (FunctionId == SQL_API_ALL_FUNCTIONS) {
+    std::fill_n(SupportedPtr, 100, SQL_FALSE);
+    for (const auto function : functions)
+      if (function < 100) SupportedPtr[function] = SQL_TRUE;
+  } else {
+    *SupportedPtr = std::find(std::begin(functions), std::end(functions), FunctionId)
+                    != std::end(functions) ? SQL_TRUE : SQL_FALSE;
+  }
+  return SQL_SUCCESS;
 }
 
 // SQLMoreResults function to return SQL_NO_DATA

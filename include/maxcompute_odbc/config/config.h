@@ -52,6 +52,7 @@ class Config {
   // / "GB18030" / "BIG5" 等。仅影响 SQL_C_CHAR 路径, SQL_C_WCHAR 始终走
   // UTF-16。 命名为 clientCharset, 避免与"服务端编码"/"传输编码"等概念混淆。
   std::string clientCharset = "UTF-8";
+  bool clientCharsetSpecified = false;
 
   // MaxQA settings
   bool interactiveMode = false;          // Enable MaxQA interactive mode
@@ -105,6 +106,11 @@ class Config {
    * @return full endpoint URL
    */
   std::string getFullEndpoint() const;
+
+  // Completed ODBC connection string. Passwords and security tokens are
+  // omitted.
+  std::string buildOutputConnectionString() const;
+  std::string encodingDiagnostics() const;
 };
 
 /**

@@ -1,6 +1,7 @@
 #include "../include/maxcompute_odbc/config/config.h"
 #include <gtest/gtest.h>
 #include <stdexcept>
+#include <vector>
 
 using namespace maxcompute_odbc;
 
@@ -387,4 +388,83 @@ TEST(ConnectionStringParserTest, UpdateConfigParsesClientCharset) {
   Config config;
   ConnectionStringParser::updateConfig("ClientCharset=BIG5", config);
   EXPECT_EQ(config.clientCharset, "BIG5");
+}
+
+TEST(ConnectionStringParserTest, CharsetSurvivesOdbcValueDelimiters) {
+  const std::vector<std::string> inputs = {
+      "Driver={MaxCompute ODBC Driver};ClientCharset={gbk};Project=p;",
+      "Project=\"p\";ClientCharset=GBK;",
+      "Project=\"p\"; ClientCharset=\"GBK\";Schema=s;",
+      "Project={p;with;semicolons};ClientCharset=GBK;",
+      "Project={p}}name};ClientCharset=GBK;",
+      "Project=\"p\\\"name\";ClientCharset=GBK;",
+      "Project=\"p\"\"name\";ClientCharset=GBK;",
+      ";;Project=p;;;ClientCharset=GBK;;",
+  };
+  for (const auto& input : inputs) {
+    SCOPED_TRACE(input);
+    auto parsed = ConnectionStringParser::parse(input);
+    Config updated;
+    ConnectionStringParser::updateConfig(input, updated);
+    EXPECT_EQ(parsed.clientCharset, "GBK");
+    EXPECT_EQ(updated.clientCharset, "GBK");
+    EXPECT_EQ(parsed.project, updated.project);
+  }
+}
+
+TEST(ConnectionStringParserTest, PreservesEscapedValuesAndRawJson) {
+  auto config = ConnectionStringParser::parse(
+      "Project={p;with}}brace};ClientCharset={GBK};"
+      "GlobalSettings={\"odps.sql.type.system.odps2\":\"true\"};");
+  EXPECT_EQ(config.project, "p;with}brace");
+  EXPECT_EQ(config.globalSettings.at("odps.sql.type.system.odps2"), "true");
+  auto properties = ConnectionStringParser::parseDriverConnectString(
+      "Project={p;with}}brace};ClientCharset={GBK};");
+  EXPECT_EQ(properties.at("PROJECT"), "p;with}brace");
+  EXPECT_EQ(properties.at("CLIENTCHARSET"), "GBK");
+}
+
+TEST(ConnectionStringParserTest, RejectsUnclosedOrTrailingDelimitedValues) {
+  for (const auto& input : {"ClientCharset={GBK", "Project=\"p",
+                            "ClientCharset={GBK}garbage;", "=GBK;"}) {
+    SCOPED_TRACE(input);
+    EXPECT_THROW(ConnectionStringParser::parse(input), std::invalid_argument);
+    Config config;
+    EXPECT_THROW(ConnectionStringParser::updateConfig(input, config),
+                 std::invalid_argument);
+  }
+}
+
+TEST(ConfigTest, OutputConnectionStringPreservesCharsetAndEscapedValues) {
+  Config config;
+  config.endpoint = "https://example.com/api";
+  config.project = "p;with}brace";
+  config.accessKeyId = "test_id";
+  config.accessKeySecret = "never_emit_this_password";
+  config.securityToken = "never_emit_this_token";
+  config.clientCharset = "GBK";
+  auto output = config.buildOutputConnectionString();
+  EXPECT_EQ(output.find("never_emit"), std::string::npos);
+  Config restored;
+  ConnectionStringParser::updateConfig(output, restored);
+  EXPECT_EQ(restored.endpoint, config.endpoint);
+  EXPECT_EQ(restored.project, config.project);
+  EXPECT_EQ(restored.accessKeyId, config.accessKeyId);
+  EXPECT_EQ(restored.clientCharset, "GBK");
+  EXPECT_FALSE(restored.accessKeySecret.has_value());
+  EXPECT_FALSE(restored.securityToken.has_value());
+}
+
+TEST(ConfigTest, EncodingDiagnosticsOnlyReportsNonSensitiveConfiguration) {
+  Config config;
+  config.accessKeySecret = "never_log_this_password";
+  config.securityToken = "never_log_this_token";
+  EXPECT_NE(config.encodingDiagnostics().find("source=default"),
+            std::string::npos);
+  ConnectionStringParser::updateConfig("ClientCharset={GBK}", config);
+  const auto diagnostic = config.encodingDiagnostics();
+  EXPECT_NE(diagnostic.find("ClientCharset=GBK"), std::string::npos);
+  EXPECT_NE(diagnostic.find("source=connection-string"), std::string::npos);
+  EXPECT_NE(diagnostic.find("Unicode=UTF-16"), std::string::npos);
+  EXPECT_EQ(diagnostic.find("never_log"), std::string::npos);
 }

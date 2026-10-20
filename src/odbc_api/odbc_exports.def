@@ -11,6 +11,7 @@ EXPORTS
     SQLFreeHandle
 
     SQLConnect
+    SQLConnectW
     SQLDisconnect
     SQLDriverConnect
     SQLDriverConnectA
@@ -44,8 +45,14 @@ EXPORTS
 
     SQLSetEnvAttr
     SQLGetStmtAttr
+    SQLGetStmtAttrW
     SQLGetInfo
     SQLGetInfoW
+    SQLGetFunctions
+    SQLGetTypeInfo
+    SQLGetTypeInfoW
+    SQLGetConnectAttr
+    SQLGetConnectAttrW
 
     SQLSetConnectAttr
     SQLSetConnectAttrW
