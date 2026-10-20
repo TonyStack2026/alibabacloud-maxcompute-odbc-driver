@@ -212,7 +212,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: maxcompute-odbc-macos-x64
+          name: maxcompute-odbc-macos-arm64
           path: build/lib/libmaxcompute_odbc.dylib
 
   build-linux:
@@ -292,8 +292,8 @@ jobs:
           cp artifacts/maxcompute-odbc-windows-x64-msi/*.msi "release/"
 
           # macOS archive
-          cd artifacts/maxcompute-odbc-macos-x64
-          tar -czf "../../release/maxcompute-odbc-${VERSION}-macos-x64.tar.gz" *
+          cd artifacts/maxcompute-odbc-macos-arm64
+          tar -czf "../../release/maxcompute-odbc-${VERSION}-macos-arm64.tar.gz" *
           cd ../..
 
           # Linux archive
