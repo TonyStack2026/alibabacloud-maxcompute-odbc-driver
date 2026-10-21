@@ -68,8 +68,8 @@ SQLRETURN GetInfoImpl(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
           return L"maxcompute_odbc.dll";
         else if (strcmp(ansi_str, "MaxCompute") == 0)
           return L"MaxCompute";
-        else if (strcmp(ansi_str, "1.0.1") == 0)
-          return L"1.0.1";
+        else if (strcmp(ansi_str, "1.0.2") == 0)
+          return L"1.0.2";
         else if (strcmp(ansi_str, "1.0") == 0)
           return L"1.0";
         else if (strcmp(ansi_str, "03.80") == 0)
@@ -124,7 +124,7 @@ SQLRETURN GetInfoImpl(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
       }
       case SQL_DRIVER_VER: {
         // 驱动程序版本 (这里用示例版本号)
-        const CharType *driver_ver = get_string_literal("1.0.1");
+        const CharType *driver_ver = get_string_literal("1.0.2");
         size_t len = std::char_traits<CharType>::length(driver_ver);
         if (InfoValuePtr && BufferLength > 0) {
           if constexpr (std::is_same_v<CharType, char>) {
@@ -477,13 +477,9 @@ SQLRETURN GetInfoImpl(SQLHDBC ConnectionHandle, SQLUSMALLINT InfoType,
       case SQL_CONVERT_WCHAR:
       case SQL_CONVERT_WVARCHAR:
       case SQL_CONVERT_WLONGVARCHAR: {
-        // 字符类型相互转换的能力位. MaxCompute 通过 CAST AS STRING 支持文本/
-        // 宽文本之间的转换; Power BI / Power Query 在选择 SQL_C_WCHAR 路径
-        // 前会探测这些能力位, default 分支返回 0 会让部分客户端走兼容性回退.
-        if (InfoValuePtr) {
-          *(SQLUINTEGER *)InfoValuePtr =
-              SQL_CVT_CHAR | SQL_CVT_VARCHAR | SQL_CVT_WCHAR | SQL_CVT_WVARCHAR;
-        }
+        // These bits describe SQL CONVERT scalar-function support, not C
+        // buffer encoding. Do not advertise unverified SQL conversions.
+        if (InfoValuePtr) *(SQLUINTEGER *)InfoValuePtr = 0;
         info_length = sizeof(SQLUINTEGER);
         break;
       }

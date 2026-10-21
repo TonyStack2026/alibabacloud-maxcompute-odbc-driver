@@ -145,3 +145,10 @@ jobs:
 
       - name: Run unit tests
         run: ctest --test-dir build --output-on-failure --timeout 120 --no-tests=error --exclude-regex "logging_test"
+
+      - name: Upload Linux driver for consumer verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: maxcompute-odbc-linux-candidate
+          path: build/lib/libmaxcompute_odbc.so
+          if-no-files-found: error

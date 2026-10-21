@@ -87,7 +87,7 @@ TEST(StatementFetch, ParsedCharsetReachesBoundAndGetDataResults) {
   }
 }
 
-TEST(StatementMetadata, TextColumnsReportUnicodeTypesAndOdbcTypeNames) {
+TEST(StatementMetadata, TextColumnsReportUnicodeTypesAndNativeTypeNames) {
   StmtHandle stmt(nullptr);
   std::vector<Column> columns;
   columns.push_back(
@@ -111,11 +111,11 @@ TEST(StatementMetadata, TextColumnsReportUnicodeTypesAndOdbcTypeNames) {
   };
   const Expected expected[] = {
       {1, SQL_BIGINT, 19, "BIGINT"},
-      {2, SQL_WVARCHAR, 65535, "WVARCHAR"},
-      {3, SQL_WVARCHAR, 50, "WVARCHAR"},
-      {4, SQL_WCHAR, 20, "WCHAR"},
-      {5, SQL_VARBINARY, 65535, "VARBINARY"},
-      {6, SQL_VARCHAR, 65535, "VARCHAR"},
+      {2, SQL_WVARCHAR, 65535, "STRING"},
+      {3, SQL_WVARCHAR, 50, "VARCHAR(50)"},
+      {4, SQL_WCHAR, 20, "CHAR(20)"},
+      {5, SQL_VARBINARY, 65535, "BINARY"},
+      {6, SQL_VARCHAR, 65535, "DECIMAL(38,10)"},
   };
 
   for (const auto& e : expected) {
@@ -145,7 +145,7 @@ TEST(StatementMetadata, TextColumnsReportUnicodeTypesAndOdbcTypeNames) {
     ASSERT_EQ(SQL_SUCCESS,
               stmt.getColAttribute(e.column, SQL_DESC_TYPE_NAME, wide,
                                    sizeof(wide), &wide_len, nullptr, true));
-    EXPECT_EQ(static_cast<SQLSMALLINT>(std::strlen(e.type_name)), wide_len);
+    EXPECT_EQ(static_cast<SQLSMALLINT>(std::strlen(e.type_name) * sizeof(SQLWCHAR)), wide_len);
     for (size_t i = 0; e.type_name[i] != '\0'; ++i) {
       EXPECT_EQ(static_cast<SQLWCHAR>(e.type_name[i]), wide[i]);
     }
@@ -171,11 +171,56 @@ TEST(StatementMetadata, WideTypeNameRespectsByteBufferLength) {
   // 6 bytes hold three UTF-16 units: two characters plus the terminator.
   SQLWCHAR buffer[4] = {0x5555, 0x5555, 0x5555, 0x5555};
   SQLSMALLINT length = -1;
-  ASSERT_EQ(SQL_SUCCESS, stmt.getColAttribute(1, SQL_DESC_TYPE_NAME, buffer, 6,
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, stmt.getColAttribute(1, SQL_DESC_TYPE_NAME, buffer, 6,
                                               &length, nullptr, true));
-  EXPECT_EQ(8, length);  // Full "WVARCHAR", even though the buffer truncated.
-  EXPECT_EQ('W', buffer[0]);
-  EXPECT_EQ('V', buffer[1]);
+  EXPECT_EQ(6 * sizeof(SQLWCHAR), length);  // Full native type name STRING.
+  EXPECT_EQ('S', buffer[0]);
+  EXPECT_EQ('T', buffer[1]);
   EXPECT_EQ(0, buffer[2]);
   EXPECT_EQ(0x5555, buffer[3]);
+}
+
+TEST(StatementMetadata, CharacterAttributesUseByteLengthsAndSafeTruncation) {
+  StmtHandle stmt(nullptr);
+  std::vector<Column> columns;
+  columns.push_back(Column::buildColumn("中文😀列", PrimitiveTypeInfo(OdpsType::STRING)));
+  auto schema = std::make_shared<ResultSetSchema>(std::move(columns));
+  stmt.setResultStream(std::make_unique<StaticResultStream>(schema, std::vector<Record>{}));
+  for (const auto field : {SQL_DESC_NAME, SQL_DESC_LABEL, SQL_DESC_TYPE_NAME}) {
+    const auto full_units = field == SQL_DESC_TYPE_NAME ? 6u : 5u;
+    SQLSMALLINT length = -1;
+    ASSERT_EQ(SQL_SUCCESS, stmt.getColAttribute(1, field, nullptr, 0, &length, nullptr, true));
+    EXPECT_EQ(full_units * sizeof(SQLWCHAR), length);
+    SQLWCHAR full[32] = {};
+    ASSERT_EQ(SQL_SUCCESS, stmt.getColAttribute(1, field, full, sizeof(full), &length, nullptr, true));
+    EXPECT_EQ(full_units * sizeof(SQLWCHAR), length);
+    if (field != SQL_DESC_TYPE_NAME) {
+      EXPECT_EQ(0x4e2d, full[0]);
+      EXPECT_EQ(0x6587, full[1]);
+      EXPECT_EQ(0xd83d, full[2]);
+      EXPECT_EQ(0xde00, full[3]);
+    }
+    for (const SQLSMALLINT capacity : {SQLSMALLINT(0), SQLSMALLINT(2), SQLSMALLINT(8)}) {
+      stmt.clearDiagRecords();
+      SQLWCHAR small[8];
+      std::fill(std::begin(small), std::end(small), 0x5555);
+      EXPECT_EQ(SQL_SUCCESS_WITH_INFO, stmt.getColAttribute(1, field, small, capacity, &length, nullptr, true));
+      EXPECT_EQ(full_units * sizeof(SQLWCHAR), length);
+      ASSERT_FALSE(stmt.getDiagRecords().empty());
+      EXPECT_EQ("01004", stmt.getDiagRecords().back().sql_state);
+      EXPECT_EQ(0x5555, small[capacity / sizeof(SQLWCHAR)]);
+      if (capacity == 8 && field != SQL_DESC_TYPE_NAME) EXPECT_EQ(0, small[2]);
+    }
+    for (const SQLSMALLINT invalid : {SQLSMALLINT(-1), SQLSMALLINT(1), SQLSMALLINT(3)}) {
+      stmt.clearDiagRecords();
+      SQLWCHAR guard = 0x5555;
+      EXPECT_EQ(SQL_ERROR, stmt.getColAttribute(1, field, &guard, invalid, &length, nullptr, true));
+      EXPECT_EQ(0x5555, guard);
+      ASSERT_FALSE(stmt.getDiagRecords().empty());
+      EXPECT_EQ("HY090", stmt.getDiagRecords().back().sql_state);
+    }
+    char narrow[2] = {char(0x55), char(0x55)};
+    EXPECT_EQ(SQL_SUCCESS_WITH_INFO, stmt.getColAttribute(1, field, narrow, sizeof(narrow), &length, nullptr));
+    EXPECT_EQ(field == SQL_DESC_TYPE_NAME ? 6 : 13, length);
+  }
 }

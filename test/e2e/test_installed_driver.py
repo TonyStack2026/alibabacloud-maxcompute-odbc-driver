@@ -47,7 +47,7 @@ def verify_unicode_driver_manager_path():
         assert "ClientCharset=GBK;" in completed.value
         assert "中文探针" in completed.value
         assert "PWD=" not in completed.value.upper()
-        for info, expected in ((7, "1.0.1"), (16, "中文探针"), (17, "MaxCompute")):
+        for info, expected in ((7, "1.0.2"), (16, "中文探针"), (17, "MaxCompute")):
             output, length = C.create_unicode_buffer(128), short()
             check(odbc.SQLGetInfoW(dbc, info, output, C.sizeof(output), C.byref(length)), "Unicode metadata")
             assert output.value == expected, (info, ascii(output.value))
@@ -77,7 +77,7 @@ for options in (
     ) as connection:
         print("Connection completed; reading metadata", flush=True)
         version = connection.getinfo(pyodbc.SQL_DRIVER_VER)
-        assert version == "1.0.1", f"Unexpected installed driver: {version}"
+        assert version == "1.0.2", f"Unexpected installed driver: {version}"
         assert connection.getinfo(pyodbc.SQL_DBMS_NAME) == "MaxCompute"
         assert connection.getinfo(pyodbc.SQL_DATABASE_NAME) == "package_probe"
         print(f"Installed ODBC driver {version}: connection and metadata OK")

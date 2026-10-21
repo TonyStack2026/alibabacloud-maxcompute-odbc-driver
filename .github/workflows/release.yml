@@ -9,7 +9,7 @@ on:
       version:
         description: 'Version number (e.g., 1.0.0)'
         required: true
-        default: '1.0.1'
+        default: '1.0.2'
 
 env:
   VCPKG_COMMIT: '74e6536215718009aae747d86d84b78376bf9e09'
@@ -341,6 +341,6 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-          body_path: docs/releases/1.0.1.md
+          body_path: docs/releases/${{ needs.prepare.outputs.version }}.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

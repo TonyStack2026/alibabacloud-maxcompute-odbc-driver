@@ -695,7 +695,7 @@ Result<std::unique_ptr<OdbcColumn>> convertColumn(const Column &column) {
     // 文本列以 Unicode SQL 类型对外公布. Wide-API 消费者 (Power BI / Power
     // Query) 据此走 SQL_C_WCHAR 取数, 驱动直接写 UTF-16, 避免 DM 按系统
     // 码页 (zh-CN 上是 CP936/GBK) 误解码 UTF-8 字节导致中文乱码.
-    // SQL_C_CHAR 绑定不受影响: DM 自行做 SQL_WVARCHAR <-> ANSI 转换.
+    // 显式 SQL_C_CHAR 绑定仍由驱动按 ClientCharset 输出, 不由 DM 改写.
     // ODBC 规范: WCHAR 类型 column_size 单位为字符, octet_length 为字节
     // (= column_size * sizeof(SQLWCHAR)).
     case OdpsType::VARCHAR: {

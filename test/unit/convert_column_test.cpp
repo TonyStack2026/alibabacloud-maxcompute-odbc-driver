@@ -3,9 +3,8 @@
 //
 // Key invariants:
 //   - Text types (STRING / VARCHAR / CHAR / JSON) map to Unicode SQL types
-//     (SQL_WVARCHAR / SQL_WCHAR), so the DM routes Wide-API consumers
-//     (Power BI, Power Query) through SQL_C_WCHAR. This is the fix for
-//     Chinese garbling on zh-CN Windows.
+//     (SQL_WVARCHAR / SQL_WCHAR), so metadata-driven Wide-API consumers
+//     can select SQL_C_WCHAR. Explicit SQL_C_CHAR bindings remain supported.
 //   - octet_length for WCHAR types must use sizeof(SQLWCHAR), not a literal
 //     2, so the value is correct on both UTF-16 (Windows / unixODBC) and
 //     UTF-32 (iODBC) hosts.
