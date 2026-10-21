@@ -224,3 +224,57 @@ TEST(StatementMetadata, CharacterAttributesUseByteLengthsAndSafeTruncation) {
     EXPECT_EQ(field == SQL_DESC_TYPE_NAME ? 6 : 13, length);
   }
 }
+
+TEST(StatementFetch, WideGetDataReassemblesWithoutGapsAtSurrogateBoundaries) {
+  StmtHandle stmt(nullptr);
+  std::vector<Column> columns;
+  columns.push_back(Column::buildColumn("s", PrimitiveTypeInfo(OdpsType::STRING)));
+  auto schema = std::make_shared<ResultSetSchema>(std::move(columns));
+  std::vector<Record> rows(1);
+  rows[0].values.emplace_back(std::string("A😀B"));
+  stmt.setResultStream(std::make_unique<StaticResultStream>(schema, std::move(rows)));
+  ASSERT_EQ(SQL_SUCCESS, stmt.fetch());
+  const SQLWCHAR expected[] = {'A', 0xd83d, 0xde00, 'B'};
+  // Model pyodbc ReadVarColumn: no internal Outcome::copied is available to
+  // clients, so truncated calls contribute capacity minus one terminator.
+  std::vector<std::uint8_t> output(6, 0x55);
+  size_t used = 0;
+  bool complete = false;
+  for (int call = 0; call < 8; ++call) {
+    const size_t capacity = output.size() - used;
+    SQLLEN available = 0;
+    const auto ret = stmt.getData(1, SQL_C_WCHAR, output.data() + used,
+                                  capacity, &available);
+    ASSERT_TRUE(ret == SQL_SUCCESS || ret == SQL_SUCCESS_WITH_INFO);
+    if (ret == SQL_SUCCESS) {
+      used += available;
+      complete = true;
+      break;
+    }
+    const size_t read = capacity - sizeof(SQLWCHAR);
+    ASSERT_GE(available, read);
+    used += read;
+    output.resize(used + available - read + sizeof(SQLWCHAR), 0x55);
+  }
+  ASSERT_TRUE(complete);
+  ASSERT_EQ(sizeof(expected), used);
+  EXPECT_EQ(0, std::memcmp(expected, output.data(), used));
+}
+
+TEST(StatementFetch, BoundWideTruncationStillKeepsSurrogatePairsIntact) {
+  StmtHandle stmt(nullptr);
+  std::vector<Column> columns;
+  columns.push_back(Column::buildColumn("s", PrimitiveTypeInfo(OdpsType::STRING)));
+  auto schema = std::make_shared<ResultSetSchema>(std::move(columns));
+  std::vector<Record> rows(1);
+  rows[0].values.emplace_back(std::string("A😀B"));
+  stmt.setResultStream(std::make_unique<StaticResultStream>(schema, std::move(rows)));
+  SQLWCHAR output[] = {0x5555, 0x5555, 0x5555};
+  SQLLEN length = 0;
+  ASSERT_EQ(SQL_SUCCESS, stmt.bindCol(1, SQL_C_WCHAR, output, sizeof(output), &length));
+  ASSERT_EQ(SQL_SUCCESS_WITH_INFO, stmt.fetch());
+  EXPECT_EQ(8, length);
+  EXPECT_EQ('A', output[0]);
+  EXPECT_EQ(0, output[1]);
+  EXPECT_EQ(0x5555, output[2]);
+}

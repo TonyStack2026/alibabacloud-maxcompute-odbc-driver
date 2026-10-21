@@ -653,6 +653,12 @@ SQLRETURN StmtHandle::getData(SQLUSMALLINT col_num, SQLSMALLINT target_type,
       cached = SegmentPayload{};
       cached.valid = false;
     } else {
+      // SQLGetData streams UTF-16 code units. Clients such as pyodbc infer
+      // bytes copied on 01004 from capacity minus the terminator: backing off
+      // a surrogate would leave a NUL gap in the concatenated result. Pair
+      // halves reunite across calls before decoding. Bound writes retain the
+      // whole-character truncation policy from BuildCharacterPayload.
+      if (target_type == SQL_C_WCHAR) cached.layout.utf16_boundary = false;
       cached.valid = true;
       cached.column = col_num;
       cached.target_type = target_type;
