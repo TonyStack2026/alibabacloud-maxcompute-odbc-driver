@@ -24,12 +24,12 @@ TEST_F(Metadata, DriverVersionUsesUtf16AndByteLengths) {
   ASSERT_EQ(SQL_SUCCESS,
             SQLGetInfoW(dbc, SQL_DRIVER_VER, output, sizeof(output), &length));
   EXPECT_EQ(10, length);
-  const SQLWCHAR expected[] = {'1', '.', '0', '.', '1', 0};
+  const SQLWCHAR expected[] = {'1', '.', '0', '.', '2', 0};
   for (size_t i = 0; i < 6; ++i) EXPECT_EQ(expected[i], output[i]);
   char narrow[16] = {};
   ASSERT_EQ(SQL_SUCCESS,
             SQLGetInfo(dbc, SQL_DRIVER_VER, narrow, sizeof(narrow), &length));
-  EXPECT_STREQ("1.0.1", narrow);
+  EXPECT_STREQ("1.0.2", narrow);
   EXPECT_EQ(5, length);
 }
 
@@ -131,4 +131,19 @@ TEST_F(Metadata, OtherStringsAndNumericAttributesRetainTheirTypes) {
                                      sizeof(limit), &length));
   EXPECT_EQ(128, limit);
   EXPECT_EQ(sizeof(limit), length);
+}
+
+TEST_F(Metadata, DoesNotAdvertiseUnverifiedSqlConversions) {
+  const SQLUSMALLINT infos[] = {
+      SQL_CONVERT_CHAR,  SQL_CONVERT_VARCHAR,  SQL_CONVERT_LONGVARCHAR,
+      SQL_CONVERT_WCHAR, SQL_CONVERT_WVARCHAR, SQL_CONVERT_WLONGVARCHAR};
+  for (const SQLUSMALLINT info : infos) {
+    SQLUINTEGER caps = 0;
+    SQLSMALLINT length = -1;
+    ASSERT_EQ(SQL_SUCCESS, SQLGetInfoW(dbc, info, &caps, sizeof(caps), &length))
+        << "info=" << info;
+    EXPECT_EQ(static_cast<SQLSMALLINT>(sizeof(caps)), length);
+    EXPECT_EQ(0u, caps)
+        << "info=" << info;
+  }
 }

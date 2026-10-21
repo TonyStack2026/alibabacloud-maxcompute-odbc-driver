@@ -62,6 +62,17 @@ if(GTest_FOUND)
     target_link_libraries(encoding_test PRIVATE common test_main ${ODBC_FRAMEWORKS})
     add_test(NAME encoding_test COMMAND encoding_test)
 
+    # convertColumn 类型映射测试: 直接编译 conversions.cpp + encoding.cpp,
+    # 避开 odbc_api SHARED 目标的导出表.
+    add_executable(convert_column_test
+        unit/convert_column_test.cpp
+        ${CMAKE_SOURCE_DIR}/src/odbc_api/conversions.cpp
+        ${CMAKE_SOURCE_DIR}/src/odbc_api/encoding.cpp
+        ${CMAKE_SOURCE_DIR}/src/odbc_api/column_fetch.cpp)
+    target_link_libraries(convert_column_test
+        PRIVATE maxcompute_client config common test_main ${ODBC_FRAMEWORKS})
+    add_test(NAME convert_column_test COMMAND convert_column_test)
+
     # SQLGetData 分段读取契约测试: 直接编译 column_fetch.cpp 进测试二进制,
     # 只依赖 sql.h 的类型, 不需要驱动 so 的符号导出, 也不需要网络连接.
     add_executable(column_fetch_test

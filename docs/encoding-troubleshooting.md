@@ -7,11 +7,18 @@ connection string returned by the driver.
 It also exposes the Unicode connection entry point required by the Windows
 Driver Manager and returns UTF-16 string metadata from `SQLGetInfoW`.
 
+Version 1.0.2 additionally reports text columns as Unicode SQL types. This
+allows applications that choose their fetch type from metadata to request
+UTF-16 directly. An explicit `SQL_C_CHAR` request still uses `ClientCharset`;
+the Driver Manager does not override it.
+
 `ClientCharset` controls the bytes returned for `SQL_C_CHAR`. It does not
 change MaxCompute data, SQL text encoding, or `SQL_C_WCHAR`, which uses UTF-16.
 
 In Power BI, select **ODBC**, set the DSN selection to **None**, and supply the
-complete connection string. For diagnosis, first create `C:\Temp`, then add:
+complete connection string. Try the default encoding first. If your application
+explicitly requests narrow text and expects GBK, set `ClientCharset=GBK`.
+For diagnosis, first create `C:\Temp`, then add:
 
 ```text
 Driver={MaxCompute ODBC Driver};Endpoint=<endpoint>;Project=<project>;ClientCharset=GBK;LogLevel=INFO;LogPath=C:\Temp\maxcompute-odbc.log;
@@ -21,7 +28,7 @@ Keep authentication in the existing Power BI credential configuration.
 Restart Power BI and refresh the affected query once. Look for:
 
 ```text
-[ODBC-Encoding] driver=1.0.1; ClientCharset=GBK; source=connection-string; Unicode=UTF-16
+[ODBC-Encoding] driver=1.0.2; ClientCharset=GBK; source=connection-string; Unicode=UTF-16
 [ODBC-Encoding] statement=... path=SQLGetData column=1 target_type=SQL_C_CHAR(1) encoding=GBK
 ```
 

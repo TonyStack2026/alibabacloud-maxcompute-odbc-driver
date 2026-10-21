@@ -621,7 +621,7 @@ Result<void> BuildCharacterPayload(const ColumnData &data,
     }
     case SQL_C_BINARY: {
       // MaxCompute BINARY: the server bytes arrive unchanged in a
-      // std::string and the column is described as SQL_VARCHAR, so a binary
+      // std::string and the column is described as SQL_VARBINARY, so a binary
       // target has to hand them over as they are: no charset conversion, no
       // terminator and no character-boundary rule. Converting the bytes to
       // UTF-8 text first would corrupt any value that is not valid UTF-8.
@@ -691,32 +691,49 @@ Result<std::unique_ptr<OdbcColumn>> convertColumn(const Column &column) {
     //           ->getPrecision();  // For character representation of DECIMAL
     //   break;
     // }
-    //  === 字符串 ===
+    // === 字符串 ===
+    // 文本列以 Unicode SQL 类型对外公布. Wide-API 消费者 (Power BI / Power
+    // Query) 据此走 SQL_C_WCHAR 取数, 驱动直接写 UTF-16, 避免 DM 按系统
+    // 码页 (zh-CN 上是 CP936/GBK) 误解码 UTF-8 字节导致中文乱码.
+    // 显式 SQL_C_CHAR 绑定仍由驱动按 ClientCharset 输出, 不由 DM 改写.
+    // ODBC 规范: WCHAR 类型 column_size 单位为字符, octet_length 为字节
+    // (= column_size * sizeof(SQLWCHAR)).
     case OdpsType::VARCHAR: {
       const auto *varchar_info =
           dynamic_cast<const VarcharTypeInfo *>(&type_info_ref);
-      col->sql_type = SQL_VARCHAR;
+      col->sql_type = SQL_WVARCHAR;
       col->column_size = varchar_info->getLength();
-      col->octet_length =
-          varchar_info->getLength();  // Same as column_size for VARCHAR
+      col->octet_length = varchar_info->getLength() * sizeof(SQLWCHAR);
       break;
     }
     case OdpsType::CHAR: {
       const auto *char_info =
           dynamic_cast<const CharTypeInfo *>(&type_info_ref);
-      col->sql_type = SQL_CHAR;
+      col->sql_type = SQL_WCHAR;
       col->column_size = char_info->getLength();
-      col->octet_length =
-          char_info->getLength();  // Same as column_size for CHAR
+      col->octet_length = char_info->getLength() * sizeof(SQLWCHAR);
       break;
     }
     case OdpsType::STRING:
     case OdpsType::JSON:
+      col->sql_type = SQL_WVARCHAR;
+      col->column_size = 65535;
+      col->octet_length = 65535 * sizeof(SQLWCHAR);
+      break;
     case OdpsType::BINARY:
+      // BINARY is raw bytes; report as SQL_VARBINARY so the DM routes through
+      // SQL_C_BINARY (byte identity) and never tries to charset-convert.
+      col->sql_type = SQL_VARBINARY;
+      col->column_size = 65535;
+      col->octet_length = 65535;
+      break;
     case OdpsType::DECIMAL:
+      // DECIMAL arrives as ASCII digit strings. Reporting as SQL_VARCHAR keeps
+      // existing numeric-string consumers (incl. Power BI) working without a
+      // binary-decimal pipeline. Switching to SQL_DECIMAL is a separate change.
       col->sql_type = SQL_VARCHAR;
       col->column_size = 65535;
-      col->octet_length = 65535;  // Same as column_size for STRING
+      col->octet_length = 65535;
       break;
 
     case OdpsType::BOOLEAN:
@@ -760,12 +777,13 @@ Result<std::unique_ptr<OdbcColumn>> convertColumn(const Column &column) {
     case OdpsType::MAP:
     case OdpsType::STRUCT:
     default:
-      // Fallback to VARCHAR to avoid breaking
-      col->sql_type = SQL_VARCHAR;
+      // 复杂类型作为 JSON 风格文本输出, 走 Unicode 路径与 STRING 一致.
+      col->sql_type = SQL_WVARCHAR;
       col->column_size = 65535;
-      col->octet_length = 65535;  // Same as column_size for fallback
-      MCO_LOG_WARNING("Unsupported MaxCompute type '{}', mapped to SQL_VARCHAR",
-                      type_info_ref.toString());
+      col->octet_length = 65535 * sizeof(SQLWCHAR);
+      MCO_LOG_WARNING(
+          "Unsupported MaxCompute type '{}', mapped to SQL_WVARCHAR",
+          type_info_ref.toString());
       break;
   }
   return makeSuccess<std::unique_ptr<OdbcColumn>>(std::move(col));

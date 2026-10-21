@@ -48,6 +48,28 @@ class TestMetadata(BaseTest):
         
         conn.close()
     
+    def test_sqlcolumns_unicode_types(self):
+        """SQLColumns 把 STRING 列报为 SQL_WVARCHAR"""
+        import pyodbc
+
+        conn = self.connect()
+        cursor = conn.cursor()
+
+        cursor.columns(table='information_schema.tables')
+        columns = cursor.fetchall()
+
+        # col[3] = COLUMN_NAME, col[4] = DATA_TYPE
+        col_types = {col[3].lower(): col[4] for col in columns if col[3]}
+
+        # STRING 列必须上报为 SQL_WVARCHAR (-9); Power BI / Power Query 据此
+        # 走 SQL_C_WCHAR 取数, 避免在 zh-CN Windows 上把 UTF-8 按 GBK 解码.
+        self.assert_in('table_name', col_types,
+                       "information_schema.tables should expose table_name")
+        self.assert_equals(col_types['table_name'], pyodbc.SQL_WVARCHAR,
+                           "STRING column 'table_name' must report SQL_WVARCHAR")
+
+        conn.close()
+
     def test_sqldescribecol(self):
         """测试 SQLDescribeCol - 描述列属性"""
         conn = self.connect()
@@ -208,6 +230,7 @@ def run_all_tests():
     tests = [
         ("SQLTables", test.test_sqltables),
         ("SQLColumns", test.test_sqlcolumns),
+        ("SQLColumns Unicode Types", test.test_sqlcolumns_unicode_types),
         ("SQLDescribeCol", test.test_sqldescribecol),
         ("SQLColAttribute", test.test_sqlcolattribute),
         ("SQLNumResultCols", test.test_sqlnumresultcols),
