@@ -259,10 +259,31 @@ Note: protobuf is used at the wire-format level only (via `CodedInputStream`). N
 ### Unit Tests (GTest, C++)
 | Test | File | Coverage |
 |------|------|----------|
-| config_test | `test/unit/config_test.cpp` | Config defaults, validation, ConnectionStringParser (14 tests) |
+| config_test | `test/unit/config_test.cpp` | Config defaults, validation, ConnectionStringParser (32 tests) |
 | logging_test | `test/unit/logging_test.cpp` | Logger levels, file output, format strings (4 tests) |
-| models_test | `test/unit/models_test.cpp` | InstanceStatus, ExecuteSQLRequest XML/JSON serialization (9 tests) |
-| setting_parser_test | `test/unit/setting_parser_test.cpp` | SET statement parsing, edge cases (11 tests) |
+| models_test | `test/unit/models_test.cpp` | InstanceStatus, ExecuteSQLRequest XML/JSON serialization (12 tests) |
+| setting_parser_test | `test/unit/setting_parser_test.cpp` | SET statement parsing, edge cases (13 tests) |
+| encoding_test | `test/unit/encoding_test.cpp` | ANSI/UTF-8 conversion helpers and NULL handling (19 tests) |
+| convert_column_test | `test/unit/convert_column_test.cpp` | convertColumn type mapping across SQL_C_xxx targets (13 tests) |
+| column_fetch_test | `test/unit/column_fetch_test.cpp` | SQLGetData segmented reads and length/truncation handling (16 tests) |
+| statement_fetch_test | `test/unit/statement_fetch_test.cpp` | Statement handle cursor transitions across fetches (7 tests) |
+| metadata_test | `test/unit/metadata_test.cpp` | Exported API surface, including the UTF-16 ABI seen by Power BI (9 tests) |
+
+### Build Modes (`BUILD_TESTING`)
+
+`BUILD_TESTING=ON` (the default, and the documented vcpkg build where `gtest` is a
+declared dependency) makes the unit-test suite mandatory: configure **fails** when
+Google Test cannot be found, when a suite listed in `MCO_EXPECTED_UNIT_TESTS`
+(`test/CMakeLists.txt`) is missing, or when no test case is registered. There is no
+longer a "Google Test not found, skipping tests" path that produces a green build
+which ran nothing. `-DBUILD_TESTING=OFF` is the explicit build-only / packaging mode
+and the configure log states that no tests were built or run.
+
+CI executes every suite on Linux, macOS and Windows and asserts the registered case
+count; `cmake -P scripts/check_test_gate.cmake` proves the gate itself fails closed
+and `cmake -P scripts/run_unit_tests.cmake` is the local equivalent of the CI test step.
+Adding or removing a suite means updating `MCO_EXPECTED_UNIT_TESTS` and the
+`-DMIN_TESTS` argument in `.github/workflows/ci.yml` in the same PR (CI asserts that floor, so an unnoticed drop in the list breaks the build).
 
 ### E2E Tests (Python pyodbc)
 Located in `test/e2e/`. Requires a running MaxCompute service and registered ODBC driver. Tests cover connection, queries, metadata, data types, error handling.
