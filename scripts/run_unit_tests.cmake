@@ -13,6 +13,12 @@
 #   MIN_TESTS       optional extra floor. Default: the number of names parsed out of
 #                   EXPECTED_FROM -- deliberately not hardcoded here or in CI.
 #
+# The build directory is assumed to be single-configuration -- which is what every
+# workflow step uses (`-G Ninja` in all three build jobs and both release jobs). Against a
+# multi-config directory `ctest` refuses to run anything without `-C <config>` (locally
+# reproduced: `Ninja Multi-Config` gives exit 8 / "Not Run", `Ninja` gives exit 0), so pass
+# `-C` to ctest yourself in that case rather than expecting this script to guess.
+#
 # Two checks, both fatal: every required suite name must show up in `ctest -N`, and
 # the registered count must reach MIN_TESTS. The first one is what catches a missing
 # or renamed add_test() line that a count alone would wave through (registering an

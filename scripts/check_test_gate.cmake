@@ -157,12 +157,38 @@ function(mco_runner_check _label _expected_content _build_sub _expect _marker)
     endif()
 endfunction()
 
-mco_runner_check(names-match
-        "set(MCO_EXPECTED_UNIT_TESTS gate_probe\n)"
-        "registered" PASS "MCO-UNIT-TESTS: all 1 test")
-mco_runner_check(names-substituted
-        "set(MCO_EXPECTED_UNIT_TESTS probe_that_is_not_registered\n)"
-        "registered" FAIL "not present in the ctest registration")
+# The runner checks need a directory `ctest` can run without `-C <config>`: on Windows
+# CMake's default generator is multi-config and answers "Test not available without
+# configuration", which is a property of the generator, not of the gate (CI's own
+# build-windows job uses -G Ninja). Use a dedicated single-config probe directory here --
+# Ninja when it is on PATH (present on all three runner images), the default otherwise.
+find_program(_mco_gate_ninja NAMES ninja ninja.exe)
+set(_mco_probe "${_mco_gate_work}/runner-probe")
+file(MAKE_DIRECTORY "${_mco_probe}")
+file(WRITE "${_mco_probe}/CMakeLists.txt"
+        "cmake_minimum_required(VERSION 3.20)\n"
+        "project(mco_runner_probe NONE)\n"
+        "enable_testing()\n"
+        "add_test(NAME gate_probe COMMAND \${CMAKE_COMMAND} -E echo gate_probe)\n")
+set(_mco_probe_gen "")
+if(_mco_gate_ninja)
+    set(_mco_probe_gen "-GNinja")
+endif()
+execute_process(
+    COMMAND ${_mco_gate_cmake} -S "${_mco_probe}" -B "${_mco_probe}/build" ${_mco_probe_gen}
+    OUTPUT_VARIABLE _probe_out ERROR_VARIABLE _probe_err RESULT_VARIABLE _probe_rc)
+if(NOT _probe_rc EQUAL 0)
+    # 配不出来就明说并计入失败，绝不静默跳过这两条检查
+    string(APPEND _mco_gate_failures " runner-probe")
+    message(STATUS "[runner] probe directory failed to configure (rc=${_probe_rc}, generator='${_mco_probe_gen}'):\n${_probe_out}${_probe_err}")
+else()
+    mco_runner_check(names-match
+            "set(MCO_EXPECTED_UNIT_TESTS gate_probe\n)"
+            "runner-probe/build" PASS "MCO-UNIT-TESTS: all 1 test")
+    mco_runner_check(names-substituted
+            "set(MCO_EXPECTED_UNIT_TESTS probe_that_is_not_registered\n)"
+            "runner-probe/build" FAIL "not present in the ctest registration")
+endif()
 
 if(_mco_gate_failures)
     message(STATUS
