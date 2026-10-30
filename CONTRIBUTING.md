@@ -67,7 +67,9 @@ cmake -DBUILD_DIR=build -P scripts/run_unit_tests.cmake        # same step CI ru
 ```
 
 If you add or remove a test suite, update `MCO_EXPECTED_UNIT_TESTS` in
-`test/CMakeLists.txt` and `-DMIN_TESTS` in `.github/workflows/ci.yml` in the same PR.
+`test/CMakeLists.txt` -- the CI and release steps read that list instead of carrying
+their own number, so a suite going missing (or being replaced by an unrelated case with
+the same count) fails on names, not just on arithmetic.
 
 ## Coding Standards
 

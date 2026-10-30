@@ -27,8 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CMake scripts, so they run unchanged on Linux, macOS and Windows and need nothing
   but CMake to reproduce.
 - CI executes `ctest` on Linux, macOS and Windows through
-  `scripts/run_unit_tests.cmake` and asserts the number of registered cases; a
-  dedicated job checks the gate itself on Linux and Windows.
+  `scripts/run_unit_tests.cmake`; a dedicated job checks the gate itself on Linux and
+  Windows over six configure scenarios and two runner checks.
+- The required-suite contract is enforced by **name** in both places: configure fails
+  when a suite listed in `MCO_EXPECTED_UNIT_TESTS` has no registered case, and the
+  runner fails when a named suite is absent from `ctest -N` -- registering an unrelated
+  case instead keeps the count identical and would slip past a count-only check. The CI
+  and release steps no longer carry their own minimum number.
 
 ### Changed
 - `logging_test` now uses a per-case file under the platform temp directory

@@ -370,7 +370,7 @@ declared dependency) decides what happens when Google Test is not available:
 
 | Mode | Behaviour |
 |------|-----------|
-| `-DBUILD_TESTING=ON` (default) | Configure **fails** when Google Test cannot be found, when a suite listed in `MCO_EXPECTED_UNIT_TESTS` (`test/CMakeLists.txt`) is missing, or when no test case is registered. A configured testing build therefore always contains the suites and `ctest` always has cases to run. |
+| `-DBUILD_TESTING=ON` (default) | Configure **fails** when Google Test cannot be found, when a suite named in `MCO_EXPECTED_UNIT_TESTS` (`test/CMakeLists.txt`) is not among the *registered* cases, or when no test case is registered at all. A configured testing build therefore contains every named suite, and `ctest` always has cases to run. |
 | `-DBUILD_TESTING=OFF` | Build-only / packaging mode. No test target is created and `ctest` registers nothing; the configure log states it explicitly (`MCO-BUILD-GATE: BUILD_TESTING=OFF -> driver binaries only; unit tests are NOT built, NOT registered and NOT run`). |
 
 CI runs the suites on Linux, macOS and Windows, and separately proves that the
@@ -381,9 +381,11 @@ cmake -P scripts/check_test_gate.cmake                    # missing dependency a
 cmake -DBUILD_DIR=build -P scripts/run_unit_tests.cmake   # runs the cases and checks the count
 ```
 
-When a suite is added or removed, update `MCO_EXPECTED_UNIT_TESTS` in
-`test/CMakeLists.txt` and the `-DMIN_TESTS` value in `.github/workflows/ci.yml` in
-the same change.
+`MCO_EXPECTED_UNIT_TESTS` in `test/CMakeLists.txt` is the single list of required
+suites: the configure-time gate and `scripts/run_unit_tests.cmake` both match suite
+**names** against it (a count is not evidence -- registering an unrelated case in place
+of a required one keeps the count identical), so adding or removing a suite is a
+one-line change and the workflows carry no number of their own.
 
 ### Unit Tests
 

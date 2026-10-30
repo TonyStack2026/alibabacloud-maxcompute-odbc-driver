@@ -273,17 +273,20 @@ Note: protobuf is used at the wire-format level only (via `CodedInputStream`). N
 
 `BUILD_TESTING=ON` (the default, and the documented vcpkg build where `gtest` is a
 declared dependency) makes the unit-test suite mandatory: configure **fails** when
-Google Test cannot be found, when a suite listed in `MCO_EXPECTED_UNIT_TESTS`
-(`test/CMakeLists.txt`) is missing, or when no test case is registered. There is no
+Google Test cannot be found, when a suite named in `MCO_EXPECTED_UNIT_TESTS`
+(`test/CMakeLists.txt`) is not among the *registered* cases, or when no test case is
+registered at all.
 longer a "Google Test not found, skipping tests" path that produces a green build
 which ran nothing. `-DBUILD_TESTING=OFF` is the explicit build-only / packaging mode
 and the configure log states that no tests were built or run.
 
-CI executes every suite on Linux, macOS and Windows and asserts the registered case
-count; `cmake -P scripts/check_test_gate.cmake` proves the gate itself fails closed
+CI executes every suite on Linux, macOS and Windows and asserts the registered suite
+names; `cmake -P scripts/check_test_gate.cmake` proves the gate itself fails closed
 and `cmake -P scripts/run_unit_tests.cmake` is the local equivalent of the CI test step.
-Adding or removing a suite means updating `MCO_EXPECTED_UNIT_TESTS` and the
-`-DMIN_TESTS` argument in `.github/workflows/ci.yml` in the same PR (CI asserts that floor, so an unnoticed drop in the list breaks the build).
+Adding or removing a suite means editing `MCO_EXPECTED_UNIT_TESTS` only -- the CI and release
+steps read that list at run time and match suite **names** against it, so there is no second
+number to keep in sync: a dropped or renamed `add_test()` line, or an unrelated case registered
+in its place with the count kept identical, fails on names, not on arithmetic.
 
 ### E2E Tests (Python pyodbc)
 Located in `test/e2e/`. Requires a running MaxCompute service and registered ODBC driver. Tests cover connection, queries, metadata, data types, error handling.
