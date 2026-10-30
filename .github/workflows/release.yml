@@ -90,7 +90,7 @@ jobs:
       - name: Run unit tests
         run: |
           $env:PATH = "${{ github.workspace }}\build_win64\vcpkg_installed\x64-windows\bin;$env:PATH"
-          cmake -DBUILD_DIR=build_win64 -DMIN_TESTS=9 -P scripts/run_unit_tests.cmake
+          cmake -DBUILD_DIR=build_win64 -P scripts/run_unit_tests.cmake
 
       - name: Copy dependencies
         run: |
@@ -235,7 +235,7 @@ jobs:
           cmake --build build --parallel
 
       - name: Run unit tests
-        run: cmake -DBUILD_DIR=build -DMIN_TESTS=9 -P scripts/run_unit_tests.cmake
+        run: cmake -DBUILD_DIR=build -P scripts/run_unit_tests.cmake
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -283,7 +283,7 @@ jobs:
           cmake --build build --parallel
 
       - name: Run unit tests
-        run: cmake -DBUILD_DIR=build -DMIN_TESTS=9 -P scripts/run_unit_tests.cmake
+        run: cmake -DBUILD_DIR=build -P scripts/run_unit_tests.cmake
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

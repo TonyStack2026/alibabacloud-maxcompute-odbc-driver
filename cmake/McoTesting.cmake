@@ -63,9 +63,16 @@ endmacro()
 
 # mco_testing_end()
 #
-# Second half of the gate: a testing build that registered no test case is an
-# error, not a skipped suite. Call it at the end of the directory that adds the
-# tests.
+# Second half of the gate. Two distinct checks, because they catch distinct
+# mistakes:
+#
+#   * a testing build that registered *no* test case at all is an error;
+#   * every suite named in MCO_EXPECTED_UNIT_TESTS must be present among the
+#     *registered* cases -- not merely exist as a target. Checking targets alone
+#     lets an `add_test()` line go missing (or be renamed to something unrelated)
+#     while the configure still looks green.
+#
+# Call it at the end of the directory that adds the tests, after the list is set.
 macro(mco_testing_end)
     if(BUILD_TESTING)
         get_property(_mco_registered_tests DIRECTORY PROPERTY TESTS)
@@ -78,6 +85,32 @@ macro(mco_testing_end)
                 "-DBUILD_TESTING=OFF if tests are not wanted.")
         endif()
 
+        if(NOT MCO_EXPECTED_UNIT_TESTS)
+            message(FATAL_ERROR
+                "MCO-BUILD-GATE: BUILD_TESTING=ON but MCO_EXPECTED_UNIT_TESTS is empty in "
+                "${CMAKE_CURRENT_SOURCE_DIR}. The required-suite contract needs names; "
+                "an empty list would make this gate pass on any build.")
+        endif()
+
+        set(_mco_missing_suites "")
+        foreach(_mco_expected IN LISTS MCO_EXPECTED_UNIT_TESTS)
+            if(NOT _mco_expected IN_LIST _mco_registered_tests)
+                string(APPEND _mco_missing_suites " ${_mco_expected}")
+            endif()
+        endforeach()
+        if(_mco_missing_suites)
+            list(JOIN MCO_EXPECTED_UNIT_TESTS ", " _mco_expected_list)
+            list(JOIN _mco_registered_tests ", " _mco_seen_list)
+            message(FATAL_ERROR
+                "MCO-BUILD-GATE: BUILD_TESTING=ON but these required suites are not registered "
+                "in ${CMAKE_CURRENT_SOURCE_DIR}:${_mco_missing_suites}\n"
+                "  expected (${MCO_EXPECTED_UNIT_TESTS} entries): ${_mco_expected_list}\n"
+                "  registered (${_mco_registered_count} cases):     ${_mco_seen_list}\n"
+                "A missing or renamed add_test() line must break the build; registering a "
+                "different case in its place does not count. Restore the add_test() call, or "
+                "remove the name from MCO_EXPECTED_UNIT_TESTS in the same change.")
+        endif()
+
         list(JOIN _mco_registered_tests ", " _mco_registered_list)
         message(STATUS
             "MCO-BUILD-GATE: BUILD_TESTING=ON -> ${_mco_registered_count} ctest case(s) registered: "
@@ -85,5 +118,8 @@ macro(mco_testing_end)
         unset(_mco_registered_tests)
         unset(_mco_registered_count)
         unset(_mco_registered_list)
+        unset(_mco_missing_suites)
+        unset(_mco_expected_list)
+        unset(_mco_seen_list)
     endif()
 endmacro()

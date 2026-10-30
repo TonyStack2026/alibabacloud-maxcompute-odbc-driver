@@ -116,6 +116,53 @@ mco_gate_check(registered ON PASS
         "BUILD_TESTING=ON -> 1 ctest case\\(s\\) registered: gate_probe" "1")
 mco_gate_check(build-only OFF PASS
         "BUILD_TESTING=OFF -> driver binaries only" "0")
+# The two shapes a count cannot see (reported in this repository's issue #8):
+mco_gate_check(unregistered-suite ON FAIL
+        "MCO-BUILD-GATE: BUILD_TESTING=ON but these required" "-")
+mco_gate_check(substituted ON FAIL
+        "MCO-BUILD-GATE: BUILD_TESTING=ON but these required" "-")
+
+# mco_runner_check(<label> <expected-file-content> <build dir under work> <PASS|FAIL> <marker>)
+#
+# Markers below are deliberately plain substrings without parentheses: CMake folds
+# messages at ~72 columns, and `\(` in a quoted argument does not survive to the regex
+# position unchanged -- a pattern like `case\(s\)` silently stops matching.
+#
+# Proves the runner matches suite *names* against the ctest registration, not just the
+# total: `substituted` keeps the count identical on purpose.
+function(mco_runner_check _label _expected_content _build_sub _expect _marker)
+    set(_exp_file "${_mco_gate_work}/expected-${_label}.cmake")
+    file(WRITE "${_exp_file}" "${_expected_content}")
+    execute_process(
+        COMMAND ${_mco_gate_cmake}
+                "-DBUILD_DIR=${_mco_gate_work}/${_build_sub}"
+                "-DEXPECTED_FROM=${_exp_file}"
+                -P "${_mco_gate_repo}/scripts/run_unit_tests.cmake"
+        OUTPUT_VARIABLE _out ERROR_VARIABLE _err RESULT_VARIABLE _rc)
+    string(APPEND _out "${_err}")
+    set(_ok FALSE)
+    if(_expect STREQUAL "PASS" AND _rc EQUAL 0 AND _out MATCHES "${_marker}")
+        set(_ok TRUE)
+    endif()
+    if(_expect STREQUAL "FAIL" AND NOT _rc EQUAL 0 AND _out MATCHES "${_marker}")
+        set(_ok TRUE)
+    endif()
+    if(_ok)
+        message(STATUS "[runner] ${_label}: OK (exit=${_rc})")
+    else()
+        message(STATUS "[runner] ${_label}: FAILED (exit=${_rc}, expected ${_expect} with '${_marker}')")
+        message(STATUS "${_out}")
+        string(APPEND _mco_gate_failures " runner:${_label}")
+        set(_mco_gate_failures "${_mco_gate_failures}" PARENT_SCOPE)
+    endif()
+endfunction()
+
+mco_runner_check(names-match
+        "set(MCO_EXPECTED_UNIT_TESTS gate_probe\n)"
+        "registered" PASS "MCO-UNIT-TESTS: all 1 test")
+mco_runner_check(names-substituted
+        "set(MCO_EXPECTED_UNIT_TESTS probe_that_is_not_registered\n)"
+        "registered" FAIL "not present in the ctest registration")
 
 if(_mco_gate_failures)
     message(STATUS
@@ -127,4 +174,4 @@ endif()
 # Only a passing run cleans up; a failing one leaves the configure logs behind.
 file(REMOVE_RECURSE "${_mco_gate_work}")
 
-message(STATUS "MCO-GATE-HARNESS: all 4 scenarios behave as specified")
+message(STATUS "MCO-GATE-HARNESS: all 6 configure scenarios and 2 runner checks behave as specified")
